@@ -1,0 +1,21 @@
+import { create } from 'zustand';
+
+export const usePlayerStore = create((set) => ({
+  currentTrack: null,
+  playlist: [],
+  isPlaying: false,
+  volume: 1.0,
+  
+  playTrack: (track) => set({ currentTrack: track, isPlaying: true }),
+  setPlaylist: (tracks) => set({ playlist: tracks }),
+  togglePlay: () => set((state) => ({ isPlaying: !state.isPlaying })),
+  setVolume: (level) => set({ volume: level }),
+  nextTrack: () => set((state) => {
+    // Logic to find next track in state.playlist
+    const currentIndex = state.playlist.findIndex(t => t.id === state.currentTrack?.id);
+    if (currentIndex >= 0 && currentIndex < state.playlist.length - 1) {
+        return { currentTrack: state.playlist[currentIndex + 1], isPlaying: true };
+    }
+    return state;
+  })
+}));
