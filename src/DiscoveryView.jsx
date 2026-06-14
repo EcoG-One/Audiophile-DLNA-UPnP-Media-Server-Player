@@ -33,6 +33,20 @@ export default function DiscoveryView() {
       });
   }, [activeTab, selectedAlbum, selectedArtist]);
 
+  useEffect(() => {
+    // Listen for navigation commands from the global Search Bar
+    const handleGlobalNav = (e) => {
+      const { type, id } = e.detail;
+      if (type === 'album') setSelectedAlbum(id);
+      if (type === 'artist') setSelectedArtist(id);
+      // Optional: switch active tab to match
+      setActiveTab(type === 'album' ? 'albums' : 'artists'); 
+    };
+
+    window.addEventListener('globalNav', handleGlobalNav);
+    return () => window.removeEventListener('globalNav', handleGlobalNav);
+  }, []);
+
   // ==========================================
   // NAVIGATION ROUTER
   // ==========================================

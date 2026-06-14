@@ -11,22 +11,19 @@ export default function SearchBar() {
   const searchContainerRef = useRef(null);
   const playTrack = usePlayerStore(state => state.playTrack);
 
-  // 1. Debounce Logic: Wait 300ms after the last keystroke
+  // Debounce keystrokes
   useEffect(() => {
-    const handler = setTimeout(() => {
-      setDebouncedQuery(query);
-    }, 300);
+    const handler = setTimeout(() => setDebouncedQuery(query), 300);
     return () => clearTimeout(handler);
   }, [query]);
 
-  // 2. Fetch Logic: Triggered only when debouncedQuery changes
+  // Fetch from the new comprehensive API
   useEffect(() => {
     if (!debouncedQuery.trim()) {
       setResults(null);
       setIsSearching(false);
       return;
     }
-
     setIsSearching(true);
     fetch(`/api/search?q=${encodeURIComponent(debouncedQuery)}`)
       .then(res => res.json())
@@ -35,13 +32,10 @@ export default function SearchBar() {
         setIsSearching(false);
         setIsOpen(true);
       })
-      .catch(err => {
-        console.error("Search failed:", err);
-        setIsSearching(false);
-      });
+      .catch(() => setIsSearching(false));
   }, [debouncedQuery]);
 
-  // 3. Click Outside Logic: Close dropdown if user clicks away
+  // Click outside to close
   useEffect(() => {
     function handleClickOutside(event) {
       if (searchContainerRef.current && !searchContainerRef.current.contains(event.target)) {
@@ -52,22 +46,31 @@ export default function SearchBar() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // Format duration helper (e.g., 234 -> 3:54)
   const formatTime = (seconds) => {
     const m = Math.floor(seconds / 60);
     const s = Math.floor(seconds % 60);
     return `${m}:${s < 10 ? '0' : ''}${s}`;
   };
 
+  // --- Click Handlers ---
   const handlePlay = (track) => {
     playTrack(track);
-    setIsOpen(false); // Close search when playback starts
-    setQuery(''); // Optional: clear search
+    setIsOpen(false);
   };
+
+  const handleNavigate = (type, id) => {
+    // Fire event to DiscoveryView to change pages
+    window.dispatchEvent(new CustomEvent('globalNav', { detail: { type, id } }));
+    setIsOpen(false);
+    setQuery(''); // Clear search on navigation
+  };
+
+  // Helper to check if we have any results at all
+  const hasResults = results && (results.tracks.length > 0 || results.albums.length > 0 || results.artists.length > 0);
 
   return (
     <div className="relative w-full max-w-2xl mx-auto z-50" ref={searchContainerRef}>
-      {/* Search Input */}
+      {/* Input Field */}
       <div className="relative">
         <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
           <svg className="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -78,7 +81,7 @@ export default function SearchBar() {
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          onFocus={() => { if (results) setIsOpen(true); }}
+          onFocus={() => { if (hasResults) setIsOpen(true); }}
           placeholder="Search for artists, albums, or songs..."
           className="block w-full pl-10 pr-3 py-3 border border-gray-700 rounded-full leading-5 bg-gray-900 text-gray-100 placeholder-gray-400 focus:outline-none focus:bg-gray-800 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors duration-200"
         />
@@ -89,54 +92,85 @@ export default function SearchBar() {
         )}
       </div>
 
-      {/* Search Results Dropdown */}
+      {/* Results Dropdown */}
       {isOpen && results && (
-        <div className="absolute mt-2 w-full bg-gray-900 border border-gray-700 rounded-lg shadow-2xl overflow-hidden max-h-[70vh] overflow-y-auto">
+        <div className="absolute mt-2 w-full bg-gray-900 border border-gray-700 rounded-lg shadow-2xl overflow-hidden max-h-[75vh] overflow-y-auto custom-scrollbar">
           
-          {/* Tracks Section */}
-          {results.tracks && results.tracks.length > 0 ? (
-            <div className="p-2">
-              <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 px-2">Songs</h3>
-              <ul>
-                {results.tracks.map((track) => (
-                  <li key={track.id}>
-                    <button 
-                      onClick={() => handlePlay(track)}
-                      className="w-full text-left px-2 py-2 flex items-center hover:bg-gray-800 rounded group transition-colors duration-150"
-                    >
-                      {/* Album Art Thumbnail */}
-                      <div className="flex-shrink-0 h-10 w-10 relative bg-gray-800 rounded overflow-hidden mr-3">
-                        {track.art ? (
-                          <img src={`/art/${track.art}`} alt="" className="object-cover h-full w-full" />
-                        ) : (
-                          <div className="h-full w-full flex items-center justify-center text-gray-600">🎵</div>
-                        )}
-                        {/* Play overlay on hover */}
-                        <div className="absolute inset-0 bg-black bg-opacity-50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                          <svg className="h-5 w-5 text-white pl-0.5" fill="currentColor" viewBox="0 0 20 20">
-                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" />
-                          </svg>
-                        </div>
-                      </div>
-                      
-                      {/* Track Details */}
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-gray-100 truncate">{track.title}</p>
-                        <p className="text-xs text-gray-400 truncate">{track.artist} &bull; {track.album}</p>
-                      </div>
-                      
-                      {/* Duration */}
-                      <div className="ml-4 flex-shrink-0 text-xs text-gray-500 group-hover:text-gray-300">
-                        {formatTime(track.duration)}
-                      </div>
-                    </button>
-                  </li>
-                ))}
-              </ul>
+          {hasResults ? (
+            <div className="py-2">
+              
+              {/* --- ARTISTS SECTION --- */}
+              {results.artists.length > 0 && (
+                <div className="mb-4">
+                  <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 px-4">Artists</h3>
+                  <ul>
+                    {results.artists.map(artist => (
+                      <li key={`art-${artist.name}`}>
+                        <button onClick={() => handleNavigate('artist', artist.name)} className="w-full text-left px-4 py-2 flex items-center hover:bg-gray-800 transition-colors">
+                          <div className="h-10 w-10 rounded-full bg-gray-800 flex items-center justify-center mr-3 text-lg border border-gray-700">🎤</div>
+                          <div>
+                            <p className="text-sm font-medium text-gray-100">{artist.name}</p>
+                            <p className="text-xs text-gray-400">{artist.album_count} Album{artist.album_count !== 1 ? 's' : ''}</p>
+                          </div>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* --- ALBUMS SECTION --- */}
+              {results.albums.length > 0 && (
+                <div className="mb-4">
+                  <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 px-4">Albums</h3>
+                  <ul>
+                    {results.albums.map(album => (
+                      <li key={`alb-${album.title}`}>
+                        <button onClick={() => handleNavigate('album', album.title)} className="w-full text-left px-4 py-2 flex items-center hover:bg-gray-800 transition-colors">
+                          <div className="h-10 w-10 rounded bg-gray-800 mr-3 overflow-hidden border border-gray-700">
+                            {album.art_hash ? <img src={`/art/${album.art_hash}`} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center">💿</div>}
+                          </div>
+                          <div>
+                            <p className="text-sm font-medium text-gray-100">{album.title}</p>
+                            <p className="text-xs text-gray-400">{album.artist}</p>
+                          </div>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {/* --- SONGS SECTION --- */}
+              {results.tracks.length > 0 && (
+                <div>
+                  <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 px-4">Songs</h3>
+                  <ul>
+                    {results.tracks.map((track) => (
+                      <li key={`trk-${track.id}`}>
+                        <button onClick={() => handlePlay(track)} className="w-full text-left px-4 py-2 flex items-center hover:bg-gray-800 group transition-colors">
+                          <div className="h-10 w-10 relative bg-gray-800 rounded overflow-hidden mr-3 border border-gray-700">
+                            {track.art ? <img src={`/art/${track.art}`} className="object-cover h-full w-full" /> : <div className="h-full w-full flex items-center justify-center">🎵</div>}
+                            <div className="absolute inset-0 bg-black bg-opacity-50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                              <svg className="h-5 w-5 text-white pl-0.5" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" /></svg>
+                            </div>
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium text-gray-100 truncate group-hover:text-blue-400">{track.title}</p>
+                            <p className="text-xs text-gray-400 truncate">{track.artist} &bull; {track.album}</p>
+                          </div>
+                          <div className="ml-4 text-xs text-gray-500">{formatTime(track.duration)}</div>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
             </div>
           ) : (
             !isSearching && query && (
-              <div className="p-4 text-center text-gray-400 text-sm">
+              <div className="p-6 text-center text-gray-400 text-sm">
                 No results found for "{query}"
               </div>
             )

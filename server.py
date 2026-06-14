@@ -567,9 +567,9 @@ class UPnPServer:
         cursor = self.library.conn.cursor()
         search_term = f"%{query}%"
 
-        # Fetch Tracks
+        # 1. Fetch Tracks (Limit 10)
         cursor.execute(
-            "SELECT id, title, artist, album, duration, art_hash FROM media WHERE title LIKE ? LIMIT 50",
+            "SELECT id, title, artist, album, duration, art_hash FROM media WHERE title LIKE ? ORDER BY title LIMIT 10",
             (search_term,),
         )
         tracks = [
@@ -584,8 +584,26 @@ class UPnPServer:
             for row in cursor.fetchall()
         ]
 
-        # In production, add similar queries for distinct Albums and Artists
-        return web.json_response({"tracks": tracks})
+        # 2. Fetch Albums (Limit 5)
+        cursor.execute(
+            "SELECT album, artist, art_hash FROM media WHERE album LIKE ? GROUP BY album ORDER BY album LIMIT 5",
+            (search_term,),
+        )
+        albums = [
+            {"title": row[0], "artist": row[1], "art_hash": row[2]}
+            for row in cursor.fetchall()
+        ]
+
+        # 3. Fetch Artists (Limit 5)
+        cursor.execute(
+            "SELECT artist, COUNT(DISTINCT album) FROM media WHERE artist LIKE ? GROUP BY artist ORDER BY artist LIMIT 5",
+            (search_term,),
+        )
+        artists = [{"name": row[0], "album_count": row[1]} for row in cursor.fetchall()]
+
+        return web.json_response(
+            {"tracks": tracks, "albums": albums, "artists": artists}
+        )
 
     async def api_get_albums(self, request):
         cursor = self.library.conn.cursor()
