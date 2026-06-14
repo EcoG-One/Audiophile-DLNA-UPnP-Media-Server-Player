@@ -124,29 +124,34 @@ export default function AlbumPage({ albumId, onBack }) {
       {/* Tracklist Table */}
       <div className="bg-gray-900 bg-opacity-50 rounded-xl border border-gray-800 overflow-hidden">
         <table className="w-full text-left text-gray-300">
-          <thead className="text-xs uppercase text-gray-500 border-b border-gray-800">
+          <thead className="text-xs uppercase text-gray-500 border-b border-gray-800 bg-gray-900/80">
             <tr>
-              <th className="px-6 py-4 w-16 text-center">#</th>
-              <th className="px-6 py-4">Title</th>
-              <th className="px-6 py-4 text-right w-32">Duration</th>
+              {/* NEW: Updated Headers */}
+              <th className="px-6 py-4 w-16 text-center font-semibold">#</th>
+              <th className="px-6 py-4 font-semibold">Title</th>
+              <th className="px-6 py-4 font-semibold">Artist</th>
+              <th className="px-6 py-4 text-right w-32 font-semibold">Duration</th>
             </tr>
           </thead>
           <tbody>
             {albumData.tracks.map((track, index) => {
               const isCurrentlyPlaying = currentTrack?.id === track.id;
               
+              // Fallback for track number if it's 0 (meaning neither tag nor filename worked)
+              const displayTrackNum = track.track_number > 0 ? track.track_number : index + 1;
+              
               return (
                 <tr 
                   key={track.id} 
                   onClick={() => handlePlayTrack(index)}
-                  className={`group border-b border-gray-800 hover:bg-gray-800 transition-colors cursor-pointer ${isCurrentlyPlaying ? 'bg-gray-800 border-l-4 border-l-blue-500' : 'border-l-4 border-l-transparent'}`}
+                  className={`group border-b border-gray-800 hover:bg-gray-800/80 transition-colors cursor-pointer ${isCurrentlyPlaying ? 'bg-gray-800 border-l-4 border-l-blue-500' : 'border-l-4 border-l-transparent'}`}
                 >
                   {/* Track Number / Play Icon */}
                   <td className="px-6 py-4 text-center font-mono text-gray-500 group-hover:text-white">
                     {isCurrentlyPlaying && isPlaying ? (
                        <span className="text-blue-500">▶</span>
                     ) : (
-                      <span className="block group-hover:hidden">{index + 1}</span>
+                      <span className="block group-hover:hidden">{displayTrackNum}</span>
                     )}
                     {!isCurrentlyPlaying && (
                       <span className="hidden group-hover:block text-blue-400">▶</span>
@@ -156,6 +161,11 @@ export default function AlbumPage({ albumId, onBack }) {
                   {/* Title */}
                   <td className={`px-6 py-4 font-medium ${isCurrentlyPlaying ? 'text-blue-400' : 'text-gray-100'}`}>
                     {track.title}
+                  </td>
+
+                  {/* NEW: Artist Column */}
+                  <td className="px-6 py-4 text-sm text-gray-400 group-hover:text-gray-300">
+                    {track.artist}
                   </td>
                   
                   {/* Duration */}

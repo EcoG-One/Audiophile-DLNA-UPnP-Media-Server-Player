@@ -22,9 +22,9 @@ from mutagen import File as MutagenFile
 MEDIA_DIRS = [r"C:\Users\EcoG\Desktop\AppleMusicDecrypt-Windows\downloads"]
 BIND_IP = "192.168.178.143"  # Replace with your actual local IP
 PORT = 8080
-UUID = str(uuid.uuid5(uuid.NAMESPACE_DNS, "python-audiophile-dlna"))
-SERVER_NAME = "Python Audiophile Server"
-ART_CACHE_DIR = "art_cache"
+UUID = str(uuid.uuid5(uuid.NAMESPACE_DNS, "ecog-audiophile-dlna"))
+SERVER_NAME = "EcoG Audiophile Server"
+ART_CACHE_DIR = os.path.expanduser("~/.audiophile_server/art_cache")
 os.makedirs(ART_CACHE_DIR, exist_ok=True)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -34,7 +34,7 @@ logger = logging.getLogger("DLNAServer")
 # 1. Database & Metadata Scanner
 # ==========================================
 class MediaLibrary:
-    def __init__(self, db_path="media.db"):
+    def __init__(self, db_path=os.path.expanduser("~/.audiophile_server/media.db")):
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self._init_db()
 
@@ -50,7 +50,8 @@ class MediaLibrary:
                 mime_type TEXT,
                 size INTEGER,
                 duration REAL,
-                art_hash TEXT
+                art_hash TEXT,
+                track_number INTEGER
             )
         """)
         self.conn.commit()
@@ -80,14 +81,34 @@ class MediaLibrary:
             mime_type = f"audio/{file_path.suffix.lower().strip('.')}"
             size = file_path.stat().st_size
             duration = audio.info.length if hasattr(audio, "info") else 0
-
-            # Extract Art
             art_hash = self._extract_and_cache_art(file_path, album)
+
+            # --- NEW: Intelligent Track Number Extraction ---
+            import re
+
+            track_num_raw = audio.get("tracknumber", [None])[0]
+            track_number = 0
+
+            if track_num_raw:
+                try:
+                    # Handle formats like "01", "1/12", "A1"
+                    clean_num = re.search(r"\d+", str(track_num_raw))
+                    if clean_num:
+                        track_number = int(clean_num.group())
+                except ValueError:
+                    pass
+
+            # Fallback: parse track number from filename (e.g., "01 - Track.flac")
+            if track_number == 0:
+                match = re.search(r"^(\d+)", file_path.name)
+                if match:
+                    track_number = int(match.group(1))
 
             cursor.execute(
                 """
-                INSERT OR REPLACE INTO media (path, title, artist, album, mime_type, size, duration, art_hash)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO media 
+                (path, title, artist, album, mime_type, size, duration, art_hash, track_number)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
                 (
                     str(file_path),
@@ -98,6 +119,7 @@ class MediaLibrary:
                     size,
                     duration,
                     art_hash,
+                    track_number,
                 ),
             )
         except Exception as e:
@@ -401,7 +423,7 @@ class UPnPServer:
                 album = urllib.parse.unquote(parts[2])
 
                 cursor.execute(
-                    "SELECT id, title, mime_type, size, duration, art_hash FROM media WHERE artist=? AND album=? ORDER BY title",
+                    "SELECT id, title, mime_type, size, duration, art_hash FROM media WHERE artist=? AND album=? ORDER BY track_number, title",
                     (artist, album),
                 )
                 all_tracks = cursor.fetchall()
@@ -489,26 +511,37 @@ class UPnPServer:
         return web.Response(status=404)
 
     async def api_get_album(self, request):
-        album_id = urllib.parse.unquote(request.match_info['album_id'])
+        album_id = urllib.parse.unquote(request.match_info["album_id"])
         cursor = self.library.conn.cursor()
 
-        # 1. First, get the album metadata from any track in the album
-        cursor.execute("SELECT album, artist, art_hash FROM media WHERE album=? LIMIT 1", (album_id,))
+        cursor.execute(
+            "SELECT album, artist, art_hash FROM media WHERE album=? LIMIT 1",
+            (album_id,),
+        )
         meta = cursor.fetchone()
 
         if not meta:
             return web.Response(status=404)
 
-        # 2. Get all tracks for this album (in a real app, you'd sort by track_number)
-        cursor.execute("SELECT id, title, duration FROM media WHERE album=? ORDER BY title", (album_id,))
-        tracks = [{"id": row[0], "title": row[1], "duration": row[2]} for row in cursor.fetchall()]
+        # --- NEW: Select Artist and Track Number, Order by Track Number ---
+        cursor.execute(
+            "SELECT id, title, duration, artist, track_number FROM media WHERE album=? ORDER BY track_number, title",
+            (album_id,),
+        )
+        tracks = [
+            {
+                "id": row[0],
+                "title": row[1],
+                "duration": row[2],
+                "artist": row[3],
+                "track_number": row[4],
+            }
+            for row in cursor.fetchall()
+        ]
 
-        return web.json_response({
-            "title": meta[0],
-            "artist": meta[1],
-            "art_hash": meta[2],
-            "tracks": tracks
-        })
+        return web.json_response(
+            {"title": meta[0], "artist": meta[1], "art_hash": meta[2], "tracks": tracks}
+        )
 
     async def api_get_config(self, request):
         return web.json_response(
