@@ -1,5 +1,7 @@
 import hashlib
 import os
+import json
+import ipaddress
 from io import BytesIO
 from mutagen.flac import FLAC
 from mutagen.mp3 import MP3
@@ -13,15 +15,59 @@ import logging
 import socket
 import struct
 import uuid
+import tempfile
 from pathlib import Path
 import xml.etree.ElementTree as ET
 from aiohttp import web
 from mutagen import File as MutagenFile
+from transcoder import AudioTranscoder
+from capabilities import BrowserCapabilities
+
+
+logger = logging.getLogger("AudiophileServer")
+
+
+def load_config(config_path=os.path.expanduser("~/.audiophile_server/server_config.json")):
+    """
+    Loads configuration from disk. If the file is missing or corrupted,
+    it returns safe default values.
+    """
+    # 1. Define base defaults
+    config = {
+        "BIND_IP": "192.168.178.143",  # Replace with your actual local IP
+        "PORT": 8080,
+        "MEDIA_DIRS": [],
+        # "UUID": str(uuid.uuid4()),  # Generate a persistent UUID if none exists
+    }
+
+    # 2. Check if file exists
+    if not os.path.exists(config_path):
+        logger.info(f"Configuration file '{config_path}' not found. Using defaults.")
+        return config
+
+    # 3. Read and parse the file
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            saved_config = json.load(f)
+
+            # Merge loaded settings into the defaults (ensures missing keys don't break the app)
+            config.update(saved_config)
+            logger.info("Configuration loaded successfully from disk.")
+
+    except json.JSONDecodeError:
+        logger.error(
+            f"Configuration file '{config_path}' is corrupted! Falling back to defaults."
+        )
+    except Exception as e:
+        logger.error(f"Failed to read configuration file: {e}")
+
+    return config
+
 
 # Configuration
-MEDIA_DIRS = [r"C:\Users\EcoG\Desktop\AppleMusicDecrypt-Windows\downloads"]
-BIND_IP = "192.168.178.143"  # Replace with your actual local IP
-PORT = 8080
+# MEDIA_DIRS = [r"C:\Users\EcoG\Desktop\AppleMusicDecrypt-Windows\downloads"]
+# BIND_IP = "192.168.178.143"  # Replace with your actual local IP
+# PORT = 8080
 UUID = str(uuid.uuid5(uuid.NAMESPACE_DNS, "ecog-audiophile-dlna"))
 SERVER_NAME = "EcoG Audiophile Server"
 ART_CACHE_DIR = os.path.expanduser("~/.audiophile_server/art_cache")
@@ -48,6 +94,7 @@ class MediaLibrary:
                 artist TEXT,
                 album TEXT,
                 mime_type TEXT,
+                codec TEXT,
                 size INTEGER,
                 duration REAL,
                 art_hash TEXT,
@@ -83,7 +130,18 @@ class MediaLibrary:
             duration = audio.info.length if hasattr(audio, "info") else 0
             art_hash = self._extract_and_cache_art(file_path, album)
 
-            # --- NEW: Intelligent Track Number Extraction ---
+            codec = "unknown"
+            if file_path.suffix.lower() in ['.m4a', '.mp4']:
+                audio = MP4(file_path)
+                # The codec tag in MP4 atoms for Apple Lossless is 'alac'
+                if audio.info.codec == 'alac':
+                    codec = 'alac'
+                else:
+                    codec = 'aac'
+            elif file_path.suffix.lower() == '.flac':
+                codec = 'flac'
+
+            # --- Intelligent Track Number Extraction ---
             import re
 
             track_num_raw = audio.get("tracknumber", [None])[0]
@@ -107,8 +165,8 @@ class MediaLibrary:
             cursor.execute(
                 """
                 INSERT OR REPLACE INTO media 
-                (path, title, artist, album, mime_type, size, duration, art_hash, track_number)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (path, title, artist, album, mime_type, codec, size, duration, art_hash, track_number)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
                 (
                     str(file_path),
@@ -116,6 +174,7 @@ class MediaLibrary:
                     artist,
                     album,
                     mime_type,
+                    codec,
                     size,
                     duration,
                     art_hash,
@@ -261,11 +320,27 @@ class SSDPProtocol(asyncio.DatagramProtocol):
 # 3. HTTP Server & UPnP SOAP Endpoints
 # ==========================================
 class UPnPServer:
-    def __init__(self, library, ip, port, uuid):
+
+    def __init__(
+        self,
+        library,
+        ip,
+        port,
+        uuid,
+        config_path=os.path.expanduser("~/.audiophile_server/server_config.json"),
+    ):
         self.library = library
-        self.ip = ip
-        self.port = port
         self.uuid = uuid
+        self.config_path = config_path
+
+        # In-memory configuration state
+        self.config = load_config(self.config_path)
+
+        # Concurrency & Task Management
+        self._config_lock = asyncio.Lock()
+        self._rescan_task = None
+        # Initialize the transcoder for on-the-fly conversions of ALAC to FLAC if needed
+        self.transcoder = AudioTranscoder()  
         self.app = web.Application(middlewares=[self.dlna_headers_middleware])
         self.setup_routes()
 
@@ -491,16 +566,42 @@ class UPnPServer:
         )
 
     async def handle_media(self, request):
-        # Aiohttp's FileResponse automatically handles HTTP 206 Range Requests natively!
-        # This is vital for audiofile network media players to seek through tracks.
-        media_id = request.match_info['id']
+        """Handles audio streaming specifically for the Web UI."""
+
+        media_id = request.match_info["id"]
+        user_agent = request.headers.get("User-Agent", "")
+
+        # Query database for file location and codec
         cursor = self.library.conn.cursor()
-        cursor.execute("SELECT path FROM media WHERE id=?", (media_id,))
+        cursor.execute("SELECT path, codec, mime_type FROM media WHERE id=?", (media_id,))
         row = cursor.fetchone()
 
-        if row and Path(row[0]).exists():
-            return web.FileResponse(row[0])
-        return web.Response(status=404)
+        if not row or not Path(row[0]).exists():
+            return web.Response(status=404, text="Media not found")
+
+        original_path, codec, original_mime = row
+
+        try:
+            # Check if client requires transcoding
+            if BrowserCapabilities.needs_alac_transcoding(user_agent, codec):
+
+                # Request the transcoded file (waits if actively transcoding, or returns instantly from cache)
+                serve_path = await self.transcoder.get_transcoded_file(original_path, media_id)
+                mime_type = "audio/flac"
+
+            else:
+                # Native playback (Safari or DLNA Renderer)
+                serve_path = Path(original_path)
+                mime_type = original_mime
+
+            # aiohttp FileResponse natively perfectly handles HTTP 206 Range requests,
+            # allowing seamless seeking on the UI.
+            response = web.FileResponse(serve_path)
+            response.content_type = mime_type
+            return response
+
+        except RuntimeError as e:
+            return web.Response(status=500, text=f"Transcoding error: {str(e)}")
 
     async def handle_art(self, request):
         art_hash = request.match_info["hash"]
@@ -543,21 +644,190 @@ class UPnPServer:
             {"title": meta[0], "artist": meta[1], "art_hash": meta[2], "tracks": tracks}
         )
 
+    async def _persist_config(self, config_data):
+        """
+        Saves the configuration to disk using an atomic write pattern.
+        This ensures power failures during a write don't corrupt the JSON file.
+        """
+        loop = asyncio.get_running_loop()
+
+        def _atomic_write():
+            dir_name = os.path.dirname(os.path.abspath(self.config_path)) or "."
+            # 1. Write to a temporary file first
+            fd, tmp_path = tempfile.mkstemp(
+                dir=dir_name, prefix="config_tmp_", suffix=".json"
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(config_data, f, indent=4)
+
+                # 2. Atomically replace the old config file with the new one
+                os.replace(tmp_path, self.config_path)
+            except Exception as e:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+                raise e
+
+        # Offload file I/O to a thread pool so it doesn't block the async event loop
+        await loop.run_in_executor(None, _atomic_write)
+
+    def _trigger_background_rescan(self, directories):
+        """
+        Safely triggers a media library rescan. If a rescan is already running,
+        it cancels the ongoing rescan and starts a fresh one with the new paths.
+        """
+        if self._rescan_task and not self._rescan_task.done():
+            logger.info("Configuration updated. Cancelling active media rescan...")
+            self._rescan_task.cancel()
+
+        self._rescan_task = asyncio.create_task(self._async_rescan_worker(directories))
+
+    async def _async_rescan_worker(self, directories):
+        """The actual background worker task."""
+        logger.info(f"Starting background media rescan for directories: {directories}")
+        try:
+            # We offload the blocking SQLite/Mutagen scan to a thread so
+            # the web server remains 100% responsive during the scan.
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, self.library.scan_directories, directories)
+
+            # Note: In a true production app, you would also increment the UPnP
+            # SystemUpdateID here so renderers know the library changed!
+            logger.info("Background media rescan completed successfully.")
+
+        except asyncio.CancelledError:
+            logger.warning(
+                "Media rescan was cancelled by a newer configuration update."
+            )
+        except Exception as e:
+            logger.error(f"Critical error during background media rescan: {e}")
+
     async def api_get_config(self, request):
         return web.json_response(
-            {"BIND_IP": BIND_IP, "PORT": PORT, "MEDIA_DIRS": MEDIA_DIRS}
+            {"BIND_IP": self.config["BIND_IP"], "PORT": self.config["PORT"], "MEDIA_DIRS": self.config["MEDIA_DIRS"]}
         )
 
     async def api_set_config(self, request):
-        data = await request.json()
-        # In a production app, validate paths and IPs here before applying
-        global BIND_IP, PORT, MEDIA_DIRS
-        BIND_IP = data.get("BIND_IP", BIND_IP)
-        PORT = data.get("PORT", PORT)
-        MEDIA_DIRS = data.get("MEDIA_DIRS", MEDIA_DIRS)
+        try:
+            payload = await request.json()
+        except Exception:
+            return web.json_response(
+                {
+                    "success": False,
+                    "errors": ["Invalid JSON payload."],
+                    "rescan_triggered": False,
+                },
+                status=400,
+            )
 
-        # Trigger a background rescan if directories changed
-        return web.json_response({"status": "success", "message": "Configuration updated."})
+        errors = []
+        validated_config = {}
+
+        # ==========================================
+        # 1. VALIDATION PHASE
+        # ==========================================
+
+        # Validate BIND_IP
+        raw_ip = payload.get("BIND_IP")
+        if raw_ip is not None:
+            try:
+                # Validates both IPv4 and IPv6 format
+                parsed_ip = ipaddress.ip_address(raw_ip)
+                validated_config["BIND_IP"] = str(parsed_ip)
+            except ValueError:
+                errors.append(f"Invalid IP address format: '{raw_ip}'")
+
+        # Validate PORT
+        raw_port = payload.get("PORT")
+        if raw_port is not None:
+            try:
+                port_num = int(raw_port)
+                if not (1024 <= port_num <= 65535):
+                    errors.append(
+                        f"Port must be between 1024 and 65535. Received: {port_num}"
+                    )
+                else:
+                    validated_config["PORT"] = port_num
+            except (ValueError, TypeError):
+                errors.append(f"Port must be a valid integer. Received: '{raw_port}'")
+
+        # Validate MEDIA_DIRS
+        raw_dirs = payload.get("MEDIA_DIRS")
+        if raw_dirs is not None:
+            if not isinstance(raw_dirs, list):
+                errors.append("MEDIA_DIRS must be a list of directory paths.")
+            else:
+                valid_dirs = []
+                for d in raw_dirs:
+                    path = Path(d).resolve()  # Resolves symlinks and normalizes path
+                    if not path.exists():
+                        errors.append(f"Directory does not exist: {d}")
+                    elif not path.is_dir():
+                        errors.append(f"Path is not a directory: {d}")
+                    elif not os.access(path, os.R_OK | os.X_OK):
+                        errors.append(f"Directory lacks read/execute permissions: {d}")
+                    else:
+                        valid_dirs.append(str(path))
+
+                # Remove duplicates while preserving order
+                validated_config["MEDIA_DIRS"] = list(dict.fromkeys(valid_dirs))
+
+        # Reject if any validation checks failed
+        if errors:
+            return web.json_response(
+                {"success": False, "errors": errors, "rescan_triggered": False},
+                status=400,
+            )
+
+        # ==========================================
+        # 2. ATOMIC APPLICATION & PERSISTENCE
+        # ==========================================
+        rescan_triggered = False
+
+        # Lock to prevent race conditions from rapid successive API calls
+        async with self._config_lock:
+            # Detect if media directories have changed (requires a rescan)
+            current_dirs = set(self.config.get("MEDIA_DIRS", []))
+            new_dirs = set(validated_config.get("MEDIA_DIRS", current_dirs))
+            dirs_changed = current_dirs != new_dirs
+
+            # Update active in-memory state
+            self.config.update(validated_config)
+
+            # Persist to disk safely
+            try:
+                await self._persist_config(self.config)
+            except IOError as e:
+                logger.error(f"Failed to persist configuration: {e}")
+                return web.json_response(
+                    {
+                        "success": False,
+                        "errors": [
+                            f"Configuration applied in-memory, but failed to save to disk: {str(e)}"
+                        ],
+                        "rescan_triggered": False,
+                    },
+                    status=500,
+                )
+
+            # ==========================================
+            # 3. BACKGROUND RESCAN (Side-Effect)
+            # ==========================================
+            if dirs_changed:
+                self._trigger_background_rescan(self.config["MEDIA_DIRS"])
+                rescan_triggered = True
+
+        # ==========================================
+        # 4. COMPREHENSIVE RESPONSE
+        # ==========================================
+        return web.json_response(
+            {
+                "success": True,
+                "errors": [],
+                "rescan_triggered": rescan_triggered,
+                "active_config": self.config,
+            }
+        )
 
     async def api_search(self, request):
         query = request.query.get("q", "").lower()
@@ -680,27 +950,51 @@ class UPnPServer:
 # 4. Main Event Loop
 # ==========================================
 async def main():
-    library = MediaLibrary()
-    library.scan_directories(MEDIA_DIRS)
+    logging.basicConfig(level=logging.INFO)
+
+    # 1. Load the persistent configuration
+    config_file = os.path.expanduser(
+        "~/.audiophile_server/server_config.json"
+    )
+    app_config = load_config(config_file)
+
+    # Extract settings
+    host_ip = app_config["BIND_IP"]
+    host_port = app_config["PORT"]
+    media_directories = app_config["MEDIA_DIRS"]
+    # server_uuid = app_config["UUID"]
+
+    # 2. Initialize the Database/Library Scanner
+    library = MediaLibrary(db_path=os.path.expanduser("~/.audiophile_server/media.db"))
+    # If there are directories configured, do an initial background check
+    if media_directories:
+        logger.info(f"Loaded {len(media_directories)} media directories from config.")
+        # Optional: Start a background thread to verify/index them on boot
+        import threading
+
+        threading.Thread(
+            target=library.scan_directories, args=(media_directories,), daemon=True
+        ).start()
 
     loop = asyncio.get_running_loop()
-    
+
     # Start SSDP
     transport, protocol = await loop.create_datagram_endpoint(
-        lambda: SSDPProtocol(BIND_IP, PORT, UUID),
-        local_addr=('0.0.0.0', 1900),
-        allow_broadcast=True
+        lambda: SSDPProtocol(host_ip, host_port, UUID),
+        local_addr=("0.0.0.0", 1900),
+        allow_broadcast=True,
     )
-    
+
     # Start Web Server
-    upnp_server = UPnPServer(library, BIND_IP, PORT, UUID)
+    upnp_server = UPnPServer(library, host_ip, host_port, UUID, config_path=config_file)
+    upnp_server.config = app_config
     runner = web.AppRunner(upnp_server.app)
     await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', PORT)
+    site = web.TCPSite(runner, '0.0.0.0', host_port)
     await site.start()
-    
-    logger.info(f"Server started on http://{BIND_IP}:{PORT}")
-    
+
+    logger.info(f"Server started on http://{host_ip}:{host_port}")
+
     try:
         while True:
             await asyncio.sleep(3600)

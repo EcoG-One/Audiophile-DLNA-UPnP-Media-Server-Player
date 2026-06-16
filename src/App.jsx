@@ -29,7 +29,7 @@ export default function App() {
       {/* ==========================================
           DESKTOP SIDEBAR (Hidden on Mobile)
           ========================================== */}
-      <nav className="hidden md:flex flex-col w-64 bg-gray-900 border-r border-gray-800 flex-shrink-0 z-20">
+      <nav className="hidden md:flex flex-col w-64 bg-gray-900 border-r border-gray-800 shrink-0 z-20">
         <div className="p-6">
           <h1 className="text-xl font-bold tracking-wider text-blue-500 flex items-center gap-3">
             <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center text-white">
@@ -37,7 +37,7 @@ export default function App() {
                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" />
               </svg>
             </div>
-            N-50AE Server
+            Audiophile Server by EcoGenius
           </h1>
         </div>
 
@@ -66,7 +66,7 @@ export default function App() {
       <main className="flex-1 flex flex-col min-w-0 relative h-full">
         
         {/* Top Header & Global Search */}
-        <header className="flex-shrink-0 h-20 bg-gray-950/80 backdrop-blur-md sticky top-0 z-10 flex items-center px-6 md:px-12 border-b border-gray-800/50">
+        <header className="shrink-0 h-20 bg-gray-950/80 backdrop-blur-md sticky top-0 z-10 flex items-center px-6 md:px-12 border-b border-gray-800/50">
           <div className="w-full max-w-2xl">
             <SearchBar />
           </div>
