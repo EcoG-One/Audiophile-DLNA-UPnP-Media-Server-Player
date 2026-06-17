@@ -1,23 +1,16 @@
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import AlbumGrid from './AlbumGrid';
 import ArtistGrid from './ArtistGrid';
-import AlbumPage from './AlbumPage';
-import ArtistPage from './ArtistPage'; // Import the new component
 
 export default function DiscoveryView() {
   const [activeTab, setActiveTab] = useState('albums');
   const [items, setItems] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
-  
-  // Navigation State
-  const [selectedAlbum, setSelectedAlbum] = useState(null);
-  const [selectedArtist, setSelectedArtist] = useState(null); // NEW
+  const navigate = useNavigate();
 
-  // Fetch base grid data
+  // The perfectly clean fetch logic (no more selectedAlbum checks!)
   useEffect(() => {
-    // Only fetch if we are NOT viewing a specific album or artist
-    if (selectedAlbum || selectedArtist) return;
-
     setIsLoading(true);
     const endpoint = activeTab === 'albums' ? '/api/albums' : '/api/artists';
     
@@ -31,69 +24,32 @@ export default function DiscoveryView() {
         console.error("Failed to load library:", err);
         setIsLoading(false);
       });
-  }, [activeTab, selectedAlbum, selectedArtist]);
+  }, [activeTab]); // We only care about the active tab changing now
 
-  useEffect(() => {
-    // Listen for navigation commands from the global Search Bar
-    const handleGlobalNav = (e) => {
-      const { type, id } = e.detail;
-      if (type === 'album') setSelectedAlbum(id);
-      if (type === 'artist') setSelectedArtist(id);
-      // Optional: switch active tab to match
-      setActiveTab(type === 'album' ? 'albums' : 'artists'); 
-    };
-
-    window.addEventListener('globalNav', handleGlobalNav);
-    return () => window.removeEventListener('globalNav', handleGlobalNav);
-  }, []);
-
-  // ==========================================
-  // NAVIGATION ROUTER
-  // ==========================================
-  
-  // 1. If an Album is selected, show the Album Page
-  if (selectedAlbum) {
-    return (
-      <AlbumPage 
-        albumId={selectedAlbum} 
-        onBack={() => setSelectedAlbum(null)} 
-      />
-    );
-  }
-
-  // 2. If an Artist is selected, show the Artist Page
-  if (selectedArtist) {
-    return (
-      <ArtistPage 
-        artistName={selectedArtist} 
-        onBack={() => setSelectedArtist(null)} 
-        onAlbumClick={setSelectedAlbum} // Pass the click down so you can open albums from here!
-      />
-    );
-  }
-
-  // 3. Default View: Show the Main Grids
   return (
-    <div className="w-full max-w-screen-2xl mx-auto px-6 py-8 pb-32">
+    <div className="w-full max-w-screen-2xl mx-auto px-6 py-8 pb-32 animate-fade-in">
+      
+      {/* Header & Tabs */}
       <div className="flex items-end justify-between mb-8 border-b border-gray-800 pb-4">
         <h1 className="text-4xl font-extrabold tracking-tight text-white">Library</h1>
         
         <div className="flex space-x-6 text-lg font-medium">
           <button 
             onClick={() => setActiveTab('albums')}
-            className={`transition-colors ${activeTab === 'albums' ? 'text-blue-500 border-b-2 border-blue-500' : 'text-gray-400 hover:text-white'}`}
+            className={`transition-colors ${activeTab === 'albums' ? 'text-blue-500 border-b-2 border-blue-500' : 'text-gray-400 hover:text-white focus:outline-none'}`}
           >
             Albums
           </button>
           <button 
             onClick={() => setActiveTab('artists')}
-            className={`transition-colors ${activeTab === 'artists' ? 'text-blue-500 border-b-2 border-blue-500' : 'text-gray-400 hover:text-white'}`}
+            className={`transition-colors ${activeTab === 'artists' ? 'text-blue-500 border-b-2 border-blue-500' : 'text-gray-400 hover:text-white focus:outline-none'}`}
           >
             Artists
           </button>
         </div>
       </div>
 
+      {/* Loading State */}
       {isLoading ? (
         <div className="flex justify-center items-center h-64">
           <div className="animate-pulse flex space-x-4">
@@ -103,9 +59,10 @@ export default function DiscoveryView() {
           </div>
         </div>
       ) : (
+        /* Render Grids & wire them directly to the Router URL */
         activeTab === 'albums' 
-          ? <AlbumGrid albums={items} onAlbumClick={setSelectedAlbum} /> 
-          : <ArtistGrid artists={items} onArtistClick={setSelectedArtist} /> // FINALLY FIXED!
+          ? <AlbumGrid albums={items} onAlbumClick={(id) => navigate(`/album/${encodeURIComponent(id)}`)} /> 
+          : <ArtistGrid artists={items} onArtistClick={(name) => navigate(`/artist/${encodeURIComponent(name)}`)} />
       )}
     </div>
   );

@@ -1,7 +1,10 @@
+import { useParams, useNavigate } from 'react-router-dom';
 import { useState, useEffect } from 'react';
 import AlbumGrid from './AlbumGrid';
 
-export default function ArtistPage({ artistName, onBack, onAlbumClick }) {
+export default function ArtistPage() {
+  const { artistName } = useParams();
+  const navigate = useNavigate();
   const [artistData, setArtistData] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -30,13 +33,10 @@ export default function ArtistPage({ artistName, onBack, onAlbumClick }) {
       
       {/* Back Button */}
       <button 
-        onClick={onBack}
-        className="flex items-center text-gray-400 hover:text-blue-400 transition-colors mb-8 focus:outline-none"
+        onClick={() => navigate(-1)} // Takes user back to previous history state!
+        className="flex items-center text-gray-400 hover:text-blue-400 transition-colors mb-8"
       >
-        <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
-        </svg>
-        Back to Artists
+        Back
       </button>
 
       {/* Hero Section */}
@@ -56,10 +56,10 @@ export default function ArtistPage({ artistName, onBack, onAlbumClick }) {
       {/* Discography Grid */}
       <div className="mb-6">
         <h3 className="text-2xl font-bold mb-6 text-gray-100">Discography</h3>
-        {/* We reuse the exact same AlbumGrid we built earlier! */}
+        {/*  When clicking an album in the artist's grid, push to the new URL: */}
         <AlbumGrid 
           albums={artistData.albums} 
-          onAlbumClick={onAlbumClick} 
+          onAlbumClick={(id) => navigate(`/album/${encodeURIComponent(id)}`)} 
         />
       </div>
     </div>

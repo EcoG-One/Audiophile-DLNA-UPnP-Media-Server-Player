@@ -1,7 +1,9 @@
+import { useNavigate } from 'react-router-dom';
 import { useState, useEffect, useRef } from 'react';
 import { usePlayerStore } from './store';
 
 export default function SearchBar() {
+  const navigate = useNavigate();
   const [query, setQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
   const [results, setResults] = useState(null);
@@ -59,10 +61,12 @@ export default function SearchBar() {
   };
 
   const handleNavigate = (type, id) => {
-    // Fire event to DiscoveryView to change pages
-    window.dispatchEvent(new CustomEvent('globalNav', { detail: { type, id } }));
     setIsOpen(false);
-    setQuery(''); // Clear search on navigation
+    setQuery('');
+    
+    // Push directly to the URL!
+    if (type === 'album') navigate(`/album/${encodeURIComponent(id)}`);
+    if (type === 'artist') navigate(`/artist/${encodeURIComponent(id)}`);
   };
 
   // Helper to check if we have any results at all

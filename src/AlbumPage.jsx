@@ -1,7 +1,10 @@
+import { useParams, useNavigate } from 'react-router-dom';
 import { useState, useEffect } from 'react';
 import { usePlayerStore } from './store';
 
-export default function AlbumPage({ albumId, onBack }) {
+export default function AlbumPage() {
+  const { albumId } = useParams();
+  const navigate = useNavigate();
   const [albumData, setAlbumData] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   
@@ -73,13 +76,10 @@ export default function AlbumPage({ albumId, onBack }) {
       
       {/* Back Button */}
       <button 
-        onClick={onBack}
-        className="flex items-center text-gray-400 hover:text-blue-400 transition-colors mb-8 focus:outline-none"
+        onClick={() => navigate(-1)} // Takes user back to previous history state!
+        className="flex items-center text-gray-400 hover:text-blue-400 transition-colors mb-8"
       >
-        <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 19l-7-7m0 0l7-7m-7 7h18" />
-        </svg>
-        Back to Library
+        Back
       </button>
 
       {/* Hero Section: Artwork & Metadata */}
