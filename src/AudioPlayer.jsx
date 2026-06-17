@@ -3,7 +3,17 @@ import { usePlayerStore } from './store';
 
 export default function AudioPlayer() {
   const audioRef = useRef(null);
-  const { currentTrack, isPlaying, volume, togglePlay, nextTrack } = usePlayerStore();
+  const { 
+    currentTrack, 
+    isPlaying, 
+    volume, 
+    togglePlay, 
+    nextTrack, 
+    currentTime, 
+    duration, 
+    setTrackProgress, 
+    seekTo 
+  } = usePlayerStore();
 
   useEffect(() => {
     if (audioRef.current) {
@@ -26,6 +36,8 @@ export default function AudioPlayer() {
         ref={audioRef} 
         src={`/media/${currentTrack.id}`} 
         onEnded={nextTrack}
+        onTimeUpdate={(e) => setTrackProgress(e.target.currentTime, e.target.duration)}
+        onLoadedMetadata={(e) => setTrackProgress(0, e.target.duration)}
       />
 
       {/* Track Info */}
@@ -48,7 +60,27 @@ export default function AudioPlayer() {
           </button>
           <button onClick={nextTrack} className="hover:text-blue-400 text-gray-300">⏭</button>
         </div>
-        {/* Progress bar would go here */}
+        
+        {/* Progress bar added here */}
+        <div className="w-full mt-2">
+          <input 
+            type="range" 
+            min="0" 
+            max={duration || 0} 
+            step="0.1" 
+            value={currentTime}
+            onChange={(e) => {
+              const time = parseFloat(e.target.value);
+              seekTo(time);
+              if (audioRef.current) audioRef.current.currentTime = time;
+            }}
+            className="w-full h-1 bg-gray-700 accent-blue-500 cursor-pointer"
+          />
+          <div className="flex justify-between text-[10px] text-gray-400 mt-1">
+            <span>{Math.floor(currentTime / 60)}:{(currentTime % 60).toFixed(0).padStart(2, '0')}</span>
+            <span>{duration ? Math.floor(duration / 60) + ":" + (duration % 60).toFixed(0).padStart(2, '0') : "0:00"}</span>
+          </div>
+        </div>
       </div>
 
       {/* Volume */}
