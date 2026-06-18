@@ -332,6 +332,8 @@ class UPnPServer:
         self.library = library
         self.uuid = uuid
         self.config_path = config_path
+        self.ip = ip
+        self.port = port
 
         # In-memory configuration state
         self.config = load_config(self.config_path)
