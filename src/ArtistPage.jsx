@@ -40,18 +40,42 @@ export default function ArtistPage() {
       </button>
 
       {/* Hero Section */}
-      <div className="flex items-center gap-8 mb-12 border-b border-gray-800 pb-8">
-        <div className="flex-shrink-0 w-32 h-32 md:w-48 md:h-48 rounded-full bg-gray-800 flex items-center justify-center text-6xl shadow-xl border-4 border-gray-900">
-          🎤
-        </div>
+<div className="relative w-full h-64 md:h-80 lg:h-96 rounded-xl overflow-hidden mb-12 shadow-2xl border border-gray-800">
+  
+  {/* Background Fanart & Gradient Overlay */}
+  {artistData.background ? (
+    <div 
+      className="absolute inset-0 bg-cover bg-center"
+      style={{ backgroundImage: `url(${artistData.background})` }}
+    >
+      <div className="absolute inset-0 bg-gradient-to-t from-gray-950 via-gray-900/80 to-transparent"></div>
+    </div>
+  ) : (
+    <div className="absolute inset-0 bg-gray-800 bg-gradient-to-tr from-gray-900 to-gray-800"></div>
+  )}
+
+  {/* Foreground Metadata & Logo */}
+  <div className="absolute inset-0 p-8 flex flex-col justify-end">
+    <div className="flex items-end gap-6 z-10">
+      {artistData.logo ? (
+        <img 
+          src={artistData.logo} 
+          alt={`${artistData.name} Logo`} 
+          className="max-h-24 md:max-h-32 object-contain filter drop-shadow-[0_4px_4px_rgba(0,0,0,0.8)]" 
+        />
+      ) : (
         <div>
-          <h2 className="text-sm font-bold text-blue-400 uppercase tracking-widest mb-2">Artist</h2>
-          <h1 className="text-4xl md:text-6xl font-extrabold mb-4">{artistData.name}</h1>
-          <p className="text-gray-400 text-lg">
-            {artistData.albums.length} Album{artistData.albums.length !== 1 ? 's' : ''}
-          </p>
+          <h2 className="text-sm font-bold text-blue-400 uppercase tracking-widest mb-2 shadow-black drop-shadow-md">Artist</h2>
+          <h1 className="text-4xl md:text-6xl font-extrabold text-white shadow-black drop-shadow-md">{artistData.name}</h1>
         </div>
-      </div>
+      )}
+    </div>
+    
+    <p className="text-gray-300 text-lg mt-4 font-medium drop-shadow-md z-10">
+      {artistData.albums.length} Album{artistData.albums.length !== 1 ? 's' : ''}
+    </p>
+  </div>
+</div>
 
       {/* Discography Grid */}
       <div className="mb-6">

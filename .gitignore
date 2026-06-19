@@ -23,3 +23,5 @@ dist-ssr
 *.sln
 *.sw?
 transcode_cache/*
+# Added by ggshield
+.cache_ggshield

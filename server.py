@@ -22,7 +22,7 @@ from aiohttp import web
 from mutagen import File as MutagenFile
 from transcoder import AudioTranscoder
 from capabilities import BrowserCapabilities
-
+from artist_art import MUSIC_LIBRARY_BASE, get_artist_assets
 
 logger = logging.getLogger("AudiophileServer")
 
@@ -368,6 +368,7 @@ class UPnPServer:
         self.app.router.add_get("/api/artists", self.api_get_artists)
         self.app.router.add_get('/api/albums/{album_id}', self.api_get_album)
         self.app.router.add_get("/api/artists/{artist_name}", self.api_get_artist)
+        self.app.router.add_static("/artist-art", str(MUSIC_LIBRARY_BASE))
 
     async def handle_description(self, request):
         # UPnP Device Architecture XML
@@ -908,44 +909,71 @@ class UPnPServer:
 
         artists = []
         for row in rows:
-            if not row[0]:
-                continue  # Skip empty artists
+            name = row[0]
+            # Fetch or retrieve cached assets
+            assets = get_artist_assets(name)
+
             artists.append(
                 {
-                    "name": row[0],
+                    "name": name,
                     "album_count": row[1],
-                    "image_url": None,  # In a future update, you could scrape artist images!
+                    "thumbnail": assets["thumbnail"],
+                    "background": assets["background"],
+                    "logo": assets["logo"],
                 }
             )
-
         return web.json_response(artists)
 
     async def api_get_artist(self, request):
-        artist_name = urllib.parse.unquote(request.match_info["artist_name"])
-        cursor = self.library.conn.cursor()
+        import traceback  # Helps us catch exact error line numbers
 
-        # Group by album to get unique albums for this specific artist
-        cursor.execute(
-            "SELECT id, title, artist, album, art_hash FROM media WHERE artist=? GROUP BY album ORDER BY album",
-            (artist_name,),
-        )
-        rows = cursor.fetchall()
+        try:
+            import urllib.parse
 
-        if not rows:
-            return web.Response(status=404)
+            artist_name = urllib.parse.unquote(request.match_info["artist_name"])
+            cursor = self.library.conn.cursor()
 
-        albums = []
-        for row in rows:
-            albums.append(
+            # Group by album to get unique albums for this specific artist
+            cursor.execute(
+                "SELECT id, title, artist, album, art_hash FROM media WHERE artist=? GROUP BY album ORDER BY album",
+                (artist_name,),
+            )
+            rows = cursor.fetchall()
+
+            if not rows:
+                return web.Response(status=404, text="Artist not found in database.")
+
+            albums = []
+            for row in rows:
+                albums.append(
+                    {
+                        "id": row[3],  # Using album name as the router ID
+                        "title": row[3],  # Album name
+                        "artist": row[2],
+                        "art_hash": row[4],
+                    }
+                )
+
+            # Fetch the rich assets from our new caching system!
+            from artist_art import get_artist_assets
+
+            assets = get_artist_assets(artist_name)
+
+            return web.json_response(
                 {
-                    "id": row[3],  # Using album name as the router ID
-                    "title": row[3],  # Album name
-                    "artist": row[2],
-                    "art_hash": row[4],
+                    "name": artist_name,
+                    "albums": albums,
+                    "thumbnail": assets.get("thumbnail", ""),
+                    "background": assets.get("background", ""),
+                    "logo": assets.get("logo", ""),
                 }
             )
 
-        return web.json_response({"name": artist_name, "albums": albums})
+        except Exception as e:
+            print(f"\n--- CRITICAL ERROR IN api_get_artist ---")
+            traceback.print_exc()
+            print(f"----------------------------------------\n")
+            return web.Response(status=500, text=str(e))
 
 
 # ==========================================
