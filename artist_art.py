@@ -19,6 +19,7 @@ REQUEST_DELAY = 1.2
 _RETRY_STATUSES = {429, 502, 503, 504}
 _MAX_RETRIES = 3
 _BACKOFF_BASE = 2.0
+_CACHE_TTL_SECONDS = 10 * 24 * 60 * 60
 
 MUSIC_LIBRARY_BASE.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(level=logging.INFO)
@@ -128,6 +129,22 @@ def get_artist_assets(name: str):
     safe_name = sanitize_filename(name)
     artist_folder = MUSIC_LIBRARY_BASE / safe_name
     artist_folder.mkdir(parents=True, exist_ok=True)
+
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT last_accessed FROM mbid_cache WHERE artist_name = ?", (name,)
+        )
+        row = cursor.fetchone()
+
+    if row and row[0] and time.time() - row[0] < _CACHE_TTL_SECONDS:
+        logger.info(f"CACHE HIT: Artist assets skipped for '{name}'")
+        return {
+            "source": "local_cache",
+            "background": "",
+            "thumbnail": "",
+            "logo": "",
+        }
 
     local_files = {
         "background": {"file": "fanart.jpg", "path": artist_folder / "fanart.jpg"},
