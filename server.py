@@ -167,6 +167,7 @@ class MediaLibrary:
                 if file_path.is_file() and file_path.suffix.lower() in supported_exts:
                     self._index_file(file_path, cursor)
         self.conn.commit()
+        self._fetch_missing_artist_art()
         logger.info("Scan complete.")
 
     def _index_file(self, file_path: Path, cursor):
@@ -365,6 +366,33 @@ class MediaLibrary:
 
         return None
 
+    def _fetch_missing_artist_art(self):
+        """
+        Background task: Iterates over all known artists and triggers artwork
+        downloads for any missing assets.
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT name FROM artists WHERE name IS NOT NULL")
+        artists = cursor.fetchall()
+
+        from artist_art import get_artist_assets
+        import logging
+
+        logger = logging.getLogger("MediaLibrary")
+        logger.info(f"Scanning {len(artists)} artists for missing artwork...")
+
+        for (artist_name,) in artists:
+            try:
+                # get_artist_assets() automatically checks the disk first and
+                # skips downloading if the assets already exist.
+                get_artist_assets(artist_name)
+            except Exception as e:
+                logger.error(
+                    f"Background artwork fetch failed for '{artist_name}': {e}"
+                )
+
+        logger.info("Background artist artwork acquisition complete.")
+
 
 import email.utils
 import time
@@ -528,178 +556,222 @@ class UPnPServer:
         return web.Response(text=xml, content_type='text/xml')
 
     async def handle_soap(self, request):
-        body = await request.text()
+        import traceback
 
-        # 1. Parse Strict SOAP Variables
-        object_id_match = re.search(r"<ObjectID[^>]*>(.*?)</ObjectID>", body)
-        object_id = object_id_match.group(1) if object_id_match else "0"
+        try:
+            body = await request.text()
 
-        browse_flag_match = re.search(r"<BrowseFlag[^>]*>(.*?)</BrowseFlag>", body)
-        browse_flag = (
-            browse_flag_match.group(1) if browse_flag_match else "BrowseDirectChildren"
-        )
+            # 1. Parse Strict SOAP Variables
+            object_id_match = re.search(r"<ObjectID[^>]*>(.*?)</ObjectID>", body)
+            object_id = object_id_match.group(1) if object_id_match else "0"
 
-        start_idx_match = re.search(r"<StartingIndex[^>]*>(\d+)</StartingIndex>", body)
-        starting_index = int(start_idx_match.group(1)) if start_idx_match else 0
+            browse_flag_match = re.search(r"<BrowseFlag[^>]*>(.*?)</BrowseFlag>", body)
+            browse_flag = (
+                browse_flag_match.group(1)
+                if browse_flag_match
+                else "BrowseDirectChildren"
+            )
 
-        req_count_match = re.search(
-            r"<RequestedCount[^>]*>(\d+)</RequestedCount>", body
-        )
-        requested_count = int(req_count_match.group(1)) if req_count_match else 0
+            start_idx_match = re.search(
+                r"<StartingIndex[^>]*>(\d+)</StartingIndex>", body
+            )
+            starting_index = int(start_idx_match.group(1)) if start_idx_match else 0
 
-        cursor = self.library.conn.cursor()
-        items_xml = ""
-        item_count = 0
-        total_matches = 0
+            req_count_match = re.search(
+                r"<RequestedCount[^>]*>(\d+)</RequestedCount>", body
+            )
+            requested_count = int(req_count_match.group(1)) if req_count_match else 0
 
-        # ==========================================
-        # HANDLE BROWSE METADATA (Strict Client Requirement)
-        # ==========================================
-        if browse_flag == "BrowseMetadata":
-            # The client just wants to know about the folder ITSELF, not its contents
-            items_xml = f"""
-            <container id="{object_id}" parentID="-1" restricted="1" searchable="0">
-                <dc:title>Folder Info</dc:title>
-                <upnp:class>object.container</upnp:class>
-            </container>"""
-            item_count = 1
-            total_matches = 1
+            cursor = self.library.conn.cursor()
+            import html
+            import urllib.parse
 
-        # ==========================================
-        # HANDLE BROWSE DIRECT CHILDREN (List Contents)
-        # ==========================================
-        elif browse_flag == "BrowseDirectChildren":
+            items_xml = ""
+            item_count = 0
+            total_matches = 0
 
-            # --- ROOT VIEW: List Artists ---
-            if object_id == "0":
-                cursor.execute("SELECT DISTINCT artist FROM tracks ORDER BY artist")
-                all_artists = cursor.fetchall()
-                total_matches = len(all_artists)
+            # ==========================================
+            # HANDLE BROWSE METADATA
+            # ==========================================
+            if browse_flag == "BrowseMetadata":
+                items_xml = f"""
+                <container id="{object_id}" parentID="-1" restricted="1" searchable="0">
+                    <dc:title>Folder Info</dc:title>
+                    <upnp:class>object.container</upnp:class>
+                </container>"""
+                item_count = 1
+                total_matches = 1
 
-                # Apply Pagination
-                end_index = (
-                    starting_index + requested_count
-                    if requested_count > 0
-                    else total_matches
-                )
-                artists = all_artists[starting_index:end_index]
+            # ==========================================
+            # HANDLE BROWSE DIRECT CHILDREN
+            # ==========================================
+            elif browse_flag == "BrowseDirectChildren":
 
-                for (artist,) in artists:
-                    if not artist:
-                        continue
-                    safe_artist = urllib.parse.quote(artist)
-                    v_id = f"artist_{safe_artist}"
+                # --- ROOT VIEW: List Artists ---
+                if object_id == "0":
+                    cursor.execute("SELECT id, name FROM artists ORDER BY name")
+                    all_artists = cursor.fetchall()
+                    total_matches = len(all_artists)
 
-                    items_xml += f"""
-                    <container id="{v_id}" parentID="0" restricted="1" childCount="1" searchable="0">
-                        <dc:title>{html.escape(artist)}</dc:title>
-                        <upnp:class>object.container.person.musicArtist</upnp:class>
-                    </container>"""
-                    item_count += 1
+                    end_index = (
+                        starting_index + requested_count
+                        if requested_count > 0
+                        else total_matches
+                    )
+                    artists = all_artists[starting_index:end_index]
 
-            # --- ARTIST VIEW: List Albums ---
-            elif object_id.startswith("artist_"):
-                artist = urllib.parse.unquote(object_id.replace("artist_", ""))
-                cursor.execute(
-                    "SELECT DISTINCT album FROM tracks WHERE artist=? ORDER BY album",
-                    (artist,),
-                )
-                all_albums = cursor.fetchall()
-                total_matches = len(all_albums)
+                    for artist_id, name in artists:
+                        if not name:
+                            continue
+                        # Using the clean MD5 hash instead of the raw name
+                        v_id = f"artist_{artist_id}"
 
-                end_index = (
-                    starting_index + requested_count
-                    if requested_count > 0
-                    else total_matches
-                )
-                albums = all_albums[starting_index:end_index]
+                        items_xml += f"""
+                        <container id="{v_id}" parentID="0" restricted="1" childCount="1" searchable="0">
+                            <dc:title>{html.escape(name)}</dc:title>
+                            <upnp:class>object.container.person.musicArtist</upnp:class>
+                        </container>"""
+                        item_count += 1
 
-                for (album,) in albums:
-                    if not album:
-                        continue
-                    safe_album = urllib.parse.quote(album)
-                    v_id = f"album_{urllib.parse.quote(artist)}_{safe_album}"
+                # --- ARTIST VIEW: List Albums (Releases) ---
+                elif object_id.startswith("artist_"):
+                    artist_id = object_id.replace("artist_", "")
 
-                    items_xml += f"""
-                    <container id="{v_id}" parentID="{object_id}" restricted="1" childCount="1" searchable="0">
-                        <dc:title>{html.escape(album)}</dc:title>
-                        <upnp:class>object.container.album.musicAlbum</upnp:class>
-                    </container>"""
-                    item_count += 1
-
-            # --- ALBUM VIEW: List Tracks ---
-            elif object_id.startswith("album_"):
-                parts = object_id.split("_", 2)
-                artist = urllib.parse.unquote(parts[1])
-                album = urllib.parse.unquote(parts[2])
-
-                cursor.execute(
-                    "SELECT id, title, mime_type, size, duration, art_hash FROM tracks WHERE artist=? AND album=? ORDER BY track_number, title",
-                    (artist, album),
-                )
-                all_tracks = cursor.fetchall()
-                total_matches = len(all_tracks)
-
-                end_index = (
-                    starting_index + requested_count
-                    if requested_count > 0
-                    else total_matches
-                )
-                tracks = all_tracks[starting_index:end_index]
-
-                for track in tracks:
-                    t_id, title, mime_type, size, duration, art_hash = track
-                    m, s = divmod(int(duration), 60)
-                    h, m = divmod(m, 60)
-                    dur_str = f"{h}:{m:02d}:{s:02d}.000"
-
-                    art_tag = ""
-                    if art_hash:
-                        art_url = f"http://{self.ip}:{self.port}/art/{art_hash}"
-                        art_tag = f"""
-                        <upnp:albumArtURI dlna:profileID="JPEG_TN">{art_url}</upnp:albumArtURI>
-                        <upnp:icon>{art_url}</upnp:icon>
+                    # Fetch specific releases (editions) for this artist
+                    cursor.execute(
                         """
+                        SELECT r.id, r.title, MIN(r.art_hash) 
+                        FROM releases r
+                        JOIN release_groups rg ON r.release_group_id = rg.id
+                        WHERE rg.artist_id=? 
+                        GROUP BY r.id 
+                        ORDER BY r.year, r.title
+                    """,
+                        (artist_id,),
+                    )
 
-                    items_xml += f"""
-                    <item id="{t_id}" parentID="{object_id}" restricted="1">
-                        <dc:title>{html.escape(title)}</dc:title>
-                        <upnp:class>object.item.audioItem.musicTrack</upnp:class>
-                        <upnp:artist>{html.escape(artist)}</upnp:artist>
-                        <upnp:album>{html.escape(album)}</upnp:album>
-                        {art_tag}
-                        <res protocolInfo="http-get:*:{mime_type}:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000" 
-                             size="{size}" duration="{dur_str}">http://{self.ip}:{self.port}/media/{t_id}</res>
-                    </item>"""
-                    item_count += 1
+                    all_albums = cursor.fetchall()
+                    total_matches = len(all_albums)
 
-        # ==========================================
-        # WRAP AND RETURN STRICT DIDL-LITE XML
-        # ==========================================
-        # CRITICAL FIX: Added xmlns:dlna namespace so strict parsers don't crash on albumArtURI
-        didl = f"""<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" 
-                              xmlns:dc="http://purl.org/dc/elements/1.1/" 
-                              xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"
-                              xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/">
-            {items_xml}
-        </DIDL-Lite>"""
+                    end_index = (
+                        starting_index + requested_count
+                        if requested_count > 0
+                        else total_matches
+                    )
+                    albums = all_albums[starting_index:end_index]
 
-        soap_response = f"""<?xml version="1.0" encoding="utf-8"?>
-        <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
-            <s:Body>
-                <u:BrowseResponse xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1">
-                    <Result>{html.escape(didl)}</Result>
-                    <NumberReturned>{item_count}</NumberReturned>
-                    <TotalMatches>{total_matches}</TotalMatches>
-                    <UpdateID>1</UpdateID>
-                </u:BrowseResponse>
-            </s:Body>
-        </s:Envelope>"""
+                    for rel_id, title, art_hash in albums:
+                        if not title:
+                            continue
+                        v_id = f"release_{rel_id}"
 
-        # CRITICAL FIX: Explicitly set charset to utf-8 in the headers
-        return web.Response(
-            text=soap_response, content_type="text/xml", charset="utf-8"
-        )
+                        items_xml += f"""
+                        <container id="{v_id}" parentID="{object_id}" restricted="1" childCount="1" searchable="0">
+                            <dc:title>{html.escape(title)}</dc:title>
+                            <upnp:class>object.container.album.musicAlbum</upnp:class>
+                        </container>"""
+                        item_count += 1
+
+                # --- ALBUM VIEW: List Tracks ---
+                elif object_id.startswith("release_"):
+                    release_id = object_id.replace("release_", "")
+
+                    # Fetch tracks with their specific track artist and release info
+                    cursor.execute(
+                        """
+                        SELECT t.id, t.title, t.mime_type, t.size, t.duration, r.art_hash, ta.name, r.title
+                        FROM tracks t
+                        JOIN releases r ON t.release_id = r.id
+                        JOIN artists ta ON t.artist_id = ta.id
+                        WHERE t.release_id=? 
+                        ORDER BY t.disc_number, t.track_number
+                    """,
+                        (release_id,),
+                    )
+
+                    all_tracks = cursor.fetchall()
+                    total_matches = len(all_tracks)
+
+                    end_index = (
+                        starting_index + requested_count
+                        if requested_count > 0
+                        else total_matches
+                    )
+                    tracks = all_tracks[starting_index:end_index]
+
+                    for track in tracks:
+                        (
+                            t_id,
+                            title,
+                            mime_type,
+                            size,
+                            duration,
+                            art_hash,
+                            track_artist,
+                            album_title,
+                        ) = track
+
+                        # Handle potential null duration safely
+                        safe_duration = int(duration or 0)
+                        m, s = divmod(safe_duration, 60)
+                        h, m = divmod(m, 60)
+                        dur_str = f"{h}:{m:02d}:{s:02d}.000"
+
+                        art_tag = ""
+                        if art_hash:
+                            art_url = f"http://{self.ip}:{self.port}/art/{art_hash}"
+                            art_tag = f"""
+                            <upnp:albumArtURI dlna:profileID="JPEG_TN">{art_url}</upnp:albumArtURI>
+                            <upnp:icon>{art_url}</upnp:icon>
+                            """
+
+                        items_xml += f"""
+                        <item id="{t_id}" parentID="{object_id}" restricted="1">
+                            <dc:title>{html.escape(title)}</dc:title>
+                            <upnp:class>object.item.audioItem.musicTrack</upnp:class>
+                            <upnp:artist>{html.escape(track_artist)}</upnp:artist>
+                            <upnp:album>{html.escape(album_title)}</upnp:album>
+                            {art_tag}
+                            <res protocolInfo="http-get:*:{mime_type}:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000" 
+                                 size="{size or 0}" duration="{dur_str}">http://{self.ip}:{self.port}/media/{t_id}</res>
+                        </item>"""
+                        item_count += 1
+
+            # ==========================================
+            # WRAP AND RETURN STRICT DIDL-LITE XML
+            # ==========================================
+            didl = f"""<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" 
+                                  xmlns:dc="http://purl.org/dc/elements/1.1/" 
+                                  xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"
+                                  xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/">
+                {items_xml}
+            </DIDL-Lite>"""
+
+            soap_response = f"""<?xml version="1.0" encoding="utf-8"?>
+            <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+                <s:Body>
+                    <u:BrowseResponse xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1">
+                        <Result>{html.escape(didl)}</Result>
+                        <NumberReturned>{item_count}</NumberReturned>
+                        <TotalMatches>{total_matches}</TotalMatches>
+                        <UpdateID>1</UpdateID>
+                    </u:BrowseResponse>
+                </s:Body>
+            </s:Envelope>"""
+
+            from aiohttp import web
+
+            return web.Response(
+                text=soap_response, content_type="text/xml", charset="utf-8"
+            )
+
+        except Exception as e:
+            print(f"\n--- CRITICAL ERROR IN DLNA BROWSE (handle_soap) ---")
+            traceback.print_exc()
+            print(f"---------------------------------------------------\n")
+            from aiohttp import web
+
+            return web.Response(status=500, text=f"DLNA Error: {str(e)}")
 
     async def handle_media(self, request):
         import traceback
@@ -1151,7 +1223,7 @@ class UPnPServer:
             rows = cursor.fetchall()
 
             # Fetch the rich assets from our caching system
-            from artist_art import get_artist_assets
+            from artist_art import get_cached_artist_assets
 
             artists = []
             for row in rows:
@@ -1159,7 +1231,7 @@ class UPnPServer:
                 if not name:
                     continue
 
-                assets = get_artist_assets(name)
+                assets = get_cached_artist_assets(name)
 
                 artists.append(
                     {
@@ -1227,9 +1299,9 @@ class UPnPServer:
                 )
 
             # 3. Fetch the rich assets from our new caching system!
-            from artist_art import get_artist_assets
+            from artist_art import get_cached_artist_assets
 
-            assets = get_artist_assets(artist_name)
+            assets = get_cached_artist_assets(artist_name)
 
             return web.json_response(
                 {

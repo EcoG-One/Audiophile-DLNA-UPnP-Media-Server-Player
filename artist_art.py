@@ -201,3 +201,31 @@ def get_artist_assets(name: str):
             else ""
         ),
     }
+
+
+def get_cached_artist_assets(name: str):
+    """
+    PURE READ OPERATION: Checks the local filesystem for artist assets.
+    Never makes network requests. Used by the web API for instant responses.
+    """
+    safe_name = sanitize_filename(name)
+    artist_folder = MUSIC_LIBRARY_BASE / safe_name
+    url_safe_name = urllib.parse.quote(safe_name)
+
+    return {
+        "thumbnail": (
+            f"/artist-art/{url_safe_name}/folder.jpg"
+            if (artist_folder / "folder.jpg").exists()
+            else ""
+        ),
+        "background": (
+            f"/artist-art/{url_safe_name}/fanart.jpg"
+            if (artist_folder / "fanart.jpg").exists()
+            else ""
+        ),
+        "logo": (
+            f"/artist-art/{url_safe_name}/logo.png"
+            if (artist_folder / "logo.png").exists()
+            else ""
+        ),
+    }

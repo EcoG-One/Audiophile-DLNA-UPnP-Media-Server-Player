@@ -21,6 +21,7 @@ export default function ArtistGrid({ artists, onArtistClick }) {
                 src={artist.thumbnail} 
                 alt={artist.name} 
                 loading="lazy"
+                decoding="async"
                 className="w-full h-full object-cover"
                 onError={(e) => { 
                   // Fallback if image fails to load

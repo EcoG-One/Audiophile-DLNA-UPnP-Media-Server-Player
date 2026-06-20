@@ -19,8 +19,14 @@ export default function AlbumGrid({ albums, onAlbumClick }) {
               <img 
                 src={`/art/${album.art_hash}`} 
                 alt={album.title} 
-                loading="lazy" 
-                className="w-full h-full object-cover"
+                loading="lazy"          // <--- to avoid ERR_NO_BUFFER_SPACE when loading many images
+                decoding="async"        // <--- stops images from freezing the UI while rendering
+                className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+                onError={(e) => { 
+                  // Fallback if the image is missing
+                  e.target.style.display = 'none'; 
+                  e.target.nextSibling.style.display = 'flex'; 
+                }}
               />
             ) : (
               <div className="w-full h-full flex items-center justify-center text-gray-600 text-4xl">
