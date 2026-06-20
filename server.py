@@ -131,6 +131,7 @@ class MediaLibrary:
             CREATE TABLE IF NOT EXISTS tracks (
                 id TEXT PRIMARY KEY,
                 release_id TEXT,
+                artist_id TEXT, 
                 mbid TEXT,
                 title TEXT NOT NULL,
                 track_number INTEGER,
@@ -139,7 +140,8 @@ class MediaLibrary:
                 path TEXT UNIQUE NOT NULL,
                 mime_type TEXT,
                 size INTEGER,
-                FOREIGN KEY(release_id) REFERENCES releases(id)
+                FOREIGN KEY(release_id) REFERENCES releases(id),
+                FOREIGN KEY(artist_id) REFERENCES artists(id)
             )
         """)
 
@@ -175,12 +177,20 @@ class MediaLibrary:
 
             # --- 1. Basic Metadata Extraction ---
             title = audio.get("title", [file_path.stem])[0]
-            artist_name = audio.get("artist", ["Unknown Artist"])[0]
+
+            # Extract both Track Artist and Album Artist
+            track_artist_name = audio.get("artist", ["Unknown Artist"])[0]
+            # Fallback: If Album Artist is missing, use Track Artist
+            album_artist_name = audio.get("albumartist", [track_artist_name])[0]
+
             album_name = audio.get("album", ["Unknown Album"])[0]
 
             # --- 2. Advanced Metadata / Identifiers ---
-            # mutagen uses specific keys for MusicBrainz tags depending on the format
-            mb_artist_id = audio.get("musicbrainz_artistid", [None])[0]
+            mb_track_artist_id = audio.get("musicbrainz_artistid", [None])[0]
+            mb_album_artist_id = audio.get(
+                "musicbrainz_albumartistid", [mb_track_artist_id]
+            )[0]
+
             mb_release_group_id = audio.get("musicbrainz_releasegroupid", [None])[0]
             mb_release_id = audio.get("musicbrainz_albumid", [None])[0]
             mb_track_id = audio.get("musicbrainz_trackid", [None])[0]
@@ -190,7 +200,6 @@ class MediaLibrary:
             cat_num = audio.get("catalognumber", [""])[0]
             barcode = audio.get("barcode", [""])[0]
 
-            # Track & Disc layout
             import re
 
             def parse_num(val):
@@ -202,38 +211,39 @@ class MediaLibrary:
 
             # --- 3. WATERFALL ID GENERATION ---
 
-            # Artist ID
-            artist_id = (
-                mb_artist_id
-                if mb_artist_id
-                else hashlib.md5(artist_name.encode()).hexdigest()
+            track_artist_id = (
+                mb_track_artist_id
+                if mb_track_artist_id
+                else hashlib.md5(track_artist_name.encode()).hexdigest()
+            )
+            album_artist_id = (
+                mb_album_artist_id
+                if mb_album_artist_id
+                else hashlib.md5(album_artist_name.encode()).hexdigest()
             )
 
-            # Release Group ID (Conceptual Album)
             if mb_release_group_id:
                 rg_id = f"rg_{mb_release_group_id}"
             else:
-                # Fallback: Artist + Album Name
-                rg_id = hashlib.md5(f"{artist_id}_{album_name}".encode()).hexdigest()
+                # Group by ALBUM ARTIST instead of Track Artist
+                rg_id = hashlib.md5(
+                    f"{album_artist_id}_{album_name}".encode()
+                ).hexdigest()
 
-            # Release ID (Specific Edition)
             if mb_release_id:
                 release_id = f"rel_{mb_release_id}"
-                release_title = album_name  # Rely on MB tagging
+                release_title = album_name
             else:
-                # Fallback Signature: Combine metadata. If metadata is missing, the folder path creates the unique split.
                 folder_path = str(file_path.parent)
                 sig = f"{rg_id}_{year}_{label}_{cat_num}_{barcode}_{folder_path}"
                 release_id = hashlib.md5(sig.encode()).hexdigest()
 
-                # Try to create a helpful display name for the edition
                 edition_hints = [year, label, cat_num]
                 hints = [h for h in edition_hints if h]
                 release_title = (
                     f"{album_name} [{' | '.join(hints)}]" if hints else album_name
                 )
 
-            # Track ID
             track_id = (
                 mb_track_id
                 if mb_track_id
@@ -244,19 +254,23 @@ class MediaLibrary:
 
             # --- 4. DATABASE UPSERTS ---
 
-            # Insert Artist
+            # Insert BOTH artists (SQLite IGNORE ensures no duplicates)
             cursor.execute(
                 "INSERT OR IGNORE INTO artists (id, mbid, name) VALUES (?, ?, ?)",
-                (artist_id, mb_artist_id, artist_name),
+                (track_artist_id, mb_track_artist_id, track_artist_name),
+            )
+            cursor.execute(
+                "INSERT OR IGNORE INTO artists (id, mbid, name) VALUES (?, ?, ?)",
+                (album_artist_id, mb_album_artist_id, album_artist_name),
             )
 
-            # Insert Release Group
+            # Release Group is owned by the ALBUM ARTIST
             cursor.execute(
                 "INSERT OR IGNORE INTO release_groups (id, mbid, artist_id, title) VALUES (?, ?, ?, ?)",
-                (rg_id, mb_release_group_id, artist_id, album_name),
+                (rg_id, mb_release_group_id, album_artist_id, album_name),
             )
 
-            # Insert Release
+            # (Insert Release logic remains exactly the same...)
             art_hash = self._extract_and_cache_art(file_path, release_id)
             cursor.execute(
                 """
@@ -278,16 +292,17 @@ class MediaLibrary:
                 ),
             )
 
-            # Insert Track
+            # Track is owned by the TRACK ARTIST
             cursor.execute(
                 """
                 INSERT OR REPLACE INTO tracks 
-                (id, release_id, mbid, title, track_number, disc_number, duration, path, mime_type, size)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, release_id, artist_id, mbid, title, track_number, disc_number, duration, path, mime_type, size)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
                 (
                     track_id,
                     release_id,
+                    track_artist_id,
                     mb_track_id,
                     title,
                     track_num,
@@ -941,14 +956,14 @@ class UPnPServer:
             cursor = self.library.conn.cursor()
             search_term = f"%{query}%"
 
-            # 1. Fetch Tracks (Limit 10)
+            # 1. Fetch Tracks (Updated JOIN for Track Artist)
             cursor.execute(
                 """
-                SELECT t.id, t.title, a.name, rg.title, t.duration, r.art_hash
+                SELECT t.id, t.title, ta.name, rg.title, t.duration, r.art_hash
                 FROM tracks t
+                JOIN artists ta ON t.artist_id = ta.id
                 JOIN releases r ON t.release_id = r.id
                 JOIN release_groups rg ON r.release_group_id = rg.id
-                JOIN artists a ON rg.artist_id = a.id
                 WHERE t.title LIKE ? 
                 ORDER BY t.title LIMIT 10
             """,
@@ -1072,13 +1087,18 @@ class UPnPServer:
             for r_row in release_rows:
                 rel_id = r_row[0]
 
-                # FIX: Removed the non-existent 'artist' column from the tracks query.
+                # Fetch tracks AND their specific Track Artist
                 cursor.execute(
-                    "SELECT id, title, duration, track_number, disc_number FROM tracks WHERE release_id=? ORDER BY disc_number, track_number",
+                    """
+                    SELECT t.id, t.title, t.duration, t.track_number, t.disc_number, a.name 
+                    FROM tracks t
+                    JOIN artists a ON t.artist_id = a.id
+                    WHERE t.release_id=? 
+                    ORDER BY t.disc_number, t.track_number
+                """,
                     (rel_id,),
                 )
 
-                # We inject the album_artist directly into the track dictionary for the React UI
                 tracks = [
                     {
                         "id": t[0],
@@ -1086,7 +1106,7 @@ class UPnPServer:
                         "duration": t[2],
                         "track_number": t[3],
                         "disc_number": t[4],
-                        "artist": album_artist,
+                        "artist": t[5],  # This is the specific Track Artist!
                     }
                     for t in cursor.fetchall()
                 ]

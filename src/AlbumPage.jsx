@@ -7,8 +7,9 @@ export default function AlbumPage() {
   const navigate = useNavigate();
   const [albumData, setAlbumData] = useState(null);
   
-  // NEW: Track which edition is currently selected in the UI
+  // State for selectors
   const [selectedEditionIndex, setSelectedEditionIndex] = useState(0);
+  const [selectedDisc, setSelectedDisc] = useState(1);
 
   // Connect to global audio player
   const { playTrack, setPlaylist, currentTrack, isPlaying } = usePlayerStore();
@@ -17,9 +18,35 @@ export default function AlbumPage() {
     fetch(`/api/albums/${encodeURIComponent(albumId)}`)
       .then(res => res.json())
       .then(data => {
+        // --- SMART CONSOLIDATION LAYER ---
+        // Merges fragmented multi-disc releases (caused by folder splits) back into a single edition
+        if (data.editions) {
+          const mergedEditions = [];
+          data.editions.forEach(edition => {
+            const match = mergedEditions.find(m => 
+              m.edition_title === edition.edition_title && 
+              m.year === edition.year && 
+              m.label === edition.label &&
+              m.catalog === edition.catalog
+            );
+
+            if (match) {
+              match.tracks = [...match.tracks, ...edition.tracks];
+            } else {
+              mergedEditions.push({ ...edition, tracks: [...edition.tracks] });
+            }
+          });
+          data.editions = mergedEditions;
+        }
+
         setAlbumData(data);
-        // Reset to the first edition whenever a new album loads
+        
+        // Reset selections on load
         setSelectedEditionIndex(0); 
+        if (data.editions && data.editions.length > 0) {
+          const firstEditionDiscs = [...new Set(data.editions[0].tracks.map(t => t.disc_number || 1))].sort((a,b) => a-b);
+          setSelectedDisc(firstEditionDiscs[0]);
+        }
       })
       .catch(err => console.error("Failed to load album:", err));
   }, [albumId]);
@@ -28,18 +55,21 @@ export default function AlbumPage() {
     return <div className="text-gray-500 text-center py-20 animate-pulse">Loading High-Res Audio...</div>;
   }
 
+  // Active Data Lookups
   const activeEdition = albumData.editions[selectedEditionIndex];
+  const uniqueDiscs = [...new Set(activeEdition.tracks.map(t => t.disc_number || 1))].sort((a, b) => a - b);
+  const displayedTracks = activeEdition.tracks.filter(t => (t.disc_number || 1) === selectedDisc);
 
-  // Helper to format duration
-  const formatTime = (seconds) => {
-    const m = Math.floor(seconds / 60);
-    const s = Math.floor(seconds % 60);
-    return `${m}:${s < 10 ? '0' : ''}${s}`;
+  // Handlers
+  const handleEditionChange = (idx) => {
+    setSelectedEditionIndex(idx);
+    const newEditionDiscs = [...new Set(albumData.editions[idx].tracks.map(t => t.disc_number || 1))].sort((a,b) => a-b);
+    setSelectedDisc(newEditionDiscs[0]); // Auto-select Disk 1 of the new edition
   };
 
-  // Play a specific track and load the rest of THIS edition into the queue
   const handlePlayTrack = (trackIndex) => {
-    const playlist = activeEdition.tracks.map(t => ({
+    // We only load the currently viewed disk into the playlist to preserve predictable ordering
+    const playlist = displayedTracks.map(t => ({
       ...t,
       artist: t.artist || albumData.artist,
       album: albumData.title,
@@ -50,10 +80,15 @@ export default function AlbumPage() {
     playTrack(playlist[trackIndex]);
   };
 
+  const formatTime = (seconds) => {
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${s < 10 ? '0' : ''}${s}`;
+  };
+
   return (
     <div className="w-full max-w-screen-xl mx-auto px-6 py-8 pb-32 animate-fade-in text-white">
       
-      {/* Back Button */}
       <button 
         onClick={() => navigate(-1)}
         className="flex items-center text-gray-400 hover:text-blue-400 transition-colors mb-8 focus:outline-none"
@@ -66,7 +101,6 @@ export default function AlbumPage() {
 
       {/* Hero Section */}
       <div className="flex flex-col md:flex-row gap-10 mb-12">
-        {/* Large Artwork */}
         <div className="flex-shrink-0 w-64 h-64 md:w-80 md:h-80 shadow-2xl rounded-lg overflow-hidden bg-gray-800 border border-gray-700">
           {activeEdition.art_hash ? (
             <img 
@@ -79,21 +113,20 @@ export default function AlbumPage() {
           )}
         </div>
 
-        {/* Details & Controls */}
         <div className="flex flex-col justify-end">
           <h2 className="text-sm font-bold text-blue-400 uppercase tracking-widest mb-2">Album</h2>
           <h1 className="text-4xl md:text-6xl font-extrabold mb-4 leading-tight">{albumData.title}</h1>
           <h2 className="text-2xl text-gray-400 mb-6">{albumData.artist}</h2>
           
-          {/* EDITIONS SELECTOR: Only shows if there are multiple versions */}
+          {/* 1. EDITIONS SELECTOR */}
           {albumData.editions.length > 1 && (
-            <div className="mb-6">
+            <div className="mb-4">
               <label className="text-xs text-gray-500 uppercase tracking-wider mb-2 block">Select Edition:</label>
               <div className="flex flex-wrap gap-2">
                 {albumData.editions.map((edition, idx) => (
                   <button
                     key={edition.id}
-                    onClick={() => setSelectedEditionIndex(idx)}
+                    onClick={() => handleEditionChange(idx)}
                     className={`px-4 py-2 rounded-full text-sm font-medium border transition-colors ${
                       idx === selectedEditionIndex 
                         ? 'bg-blue-600 border-blue-500 text-white shadow-lg' 
@@ -106,15 +139,36 @@ export default function AlbumPage() {
               </div>
             </div>
           )}
+
+          {/* 2. DISK SELECTOR */}
+          {uniqueDiscs.length > 1 && (
+            <div className="mb-2 mt-2">
+              <label className="text-xs text-gray-500 uppercase tracking-wider mb-2 block">Select Disk:</label>
+              <div className="flex flex-wrap gap-2">
+                {uniqueDiscs.map((disc) => (
+                  <button
+                    key={`disc-${disc}`}
+                    onClick={() => setSelectedDisc(disc)}
+                    className={`px-4 py-2 rounded-full text-sm font-medium border transition-colors ${
+                      disc === selectedDisc 
+                        ? 'bg-gray-100 border-gray-300 text-gray-900 shadow-lg' 
+                        : 'bg-gray-900 border-gray-700 text-gray-400 hover:bg-gray-800'
+                    }`}
+                  >
+                    DISK {disc}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Tracks Table for Active Edition */}
+      {/* Tracks Table for Active Disk */}
       <div className="bg-gray-900 bg-opacity-50 rounded-xl border border-gray-800 overflow-hidden">
         <table className="w-full text-left text-gray-300">
           <thead className="bg-gray-900/80 text-gray-500 text-xs uppercase border-b border-gray-800">
             <tr>
-              <th className="px-6 py-4 w-16 text-center">Disc</th>
               <th className="px-6 py-4 w-16 text-center">#</th>
               <th className="px-6 py-4">Title</th>
               <th className="px-6 py-4">Artist</th>
@@ -122,7 +176,7 @@ export default function AlbumPage() {
             </tr>
           </thead>
           <tbody>
-            {activeEdition.tracks.map((track, index) => {
+            {displayedTracks.map((track, index) => {
               const isCurrentlyPlaying = currentTrack?.id === track.id;
 
               return (
@@ -131,9 +185,6 @@ export default function AlbumPage() {
                   onClick={() => handlePlayTrack(index)}
                   className={`group border-b border-gray-800 hover:bg-gray-800/80 transition-colors cursor-pointer ${isCurrentlyPlaying ? 'bg-gray-800 border-l-4 border-l-blue-500' : 'border-l-4 border-l-transparent'}`}
                 >
-                  <td className="px-6 py-4 text-center font-mono text-gray-500">{track.disc_number || 1}</td>
-                  
-                  {/* Track Number / Play Icon */}
                   <td className="px-6 py-4 text-center font-mono text-gray-500 group-hover:text-white">
                     {isCurrentlyPlaying && isPlaying ? (
                        <span className="text-blue-500">▶</span>
