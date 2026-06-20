@@ -10,7 +10,7 @@ export default function AlbumGrid({ albums, onAlbumClick }) {
       {albums.map((album, index) => (
         <button 
           key={`album-${album.id}-${index}`} 
-          onClick={() => onAlbumClick(album.title)}
+          onClick={() => onAlbumClick(album.id)}
           className="group text-left focus:outline-none"
         >
           {/* Artwork Container */}

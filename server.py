@@ -1,8 +1,10 @@
+import sqlite3
 import hashlib
 import os
 import json
 import ipaddress
 from io import BytesIO
+from mutagen import File
 from mutagen.flac import FLAC
 from mutagen.mp3 import MP3
 from mutagen.mp4 import MP4
@@ -86,21 +88,70 @@ class MediaLibrary:
 
     def _init_db(self):
         cursor = self.conn.cursor()
+
+        # 1. Artists
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS media (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                path TEXT UNIQUE,
-                title TEXT,
-                artist TEXT,
-                album TEXT,
-                mime_type TEXT,
-                codec TEXT,
-                size INTEGER,
-                duration REAL,
-                art_hash TEXT,
-                track_number INTEGER
+            CREATE TABLE IF NOT EXISTS artists (
+                id TEXT PRIMARY KEY,
+                mbid TEXT,
+                name TEXT NOT NULL
             )
         """)
+
+        # 2. Release Groups (The conceptual album, e.g., "The Wall")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS release_groups (
+                id TEXT PRIMARY KEY,
+                mbid TEXT,
+                artist_id TEXT,
+                title TEXT NOT NULL,
+                FOREIGN KEY(artist_id) REFERENCES artists(id)
+            )
+        """)
+
+        # 3. Releases (Specific editions, e.g., "The Wall (1994 Remaster)")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS releases (
+                id TEXT PRIMARY KEY,
+                release_group_id TEXT,
+                mbid TEXT,
+                title TEXT,
+                year TEXT,
+                label TEXT,
+                catalog_num TEXT,
+                barcode TEXT,
+                folder_path TEXT,
+                art_hash TEXT,
+                FOREIGN KEY(release_group_id) REFERENCES release_groups(id)
+            )
+        """)
+
+        # 4. Tracks
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS tracks (
+                id TEXT PRIMARY KEY,
+                release_id TEXT,
+                mbid TEXT,
+                title TEXT NOT NULL,
+                track_number INTEGER,
+                disc_number INTEGER,
+                duration REAL,
+                path TEXT UNIQUE NOT NULL,
+                mime_type TEXT,
+                size INTEGER,
+                FOREIGN KEY(release_id) REFERENCES releases(id)
+            )
+        """)
+
+        # Create indexes for fast UI lookups
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rg_artist ON release_groups(artist_id)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rel_rg ON releases(release_group_id)"
+        )
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_trk_rel ON tracks(release_id)")
+
         self.conn.commit()
 
     def scan_directories(self, directories):
@@ -116,73 +167,140 @@ class MediaLibrary:
         self.conn.commit()
         logger.info("Scan complete.")
 
-    def _index_file(self, file_path, cursor):
-        try:
-            audio = MutagenFile(file_path, easy=True)
+    def _index_file(self, file_path: Path, cursor):
+        try:          
+            audio = File(file_path, easy=True)
             if audio is None:
                 return
 
+            # --- 1. Basic Metadata Extraction ---
             title = audio.get("title", [file_path.stem])[0]
-            artist = audio.get("artist", ["Unknown Artist"])[0]
-            album = audio.get("album", ["Unknown Album"])[0]
-            mime_type = f"audio/{file_path.suffix.lower().strip('.')}"
-            size = file_path.stat().st_size
-            duration = audio.info.length if hasattr(audio, "info") else 0
-            art_hash = self._extract_and_cache_art(file_path, album)
+            artist_name = audio.get("artist", ["Unknown Artist"])[0]
+            album_name = audio.get("album", ["Unknown Album"])[0]
 
-            codec = "unknown"
-            if file_path.suffix.lower() in ['.m4a', '.mp4']:
-                audio = MP4(file_path)
-                # The codec tag in MP4 atoms for Apple Lossless is 'alac'
-                if audio.info.codec == 'alac':
-                    codec = 'alac'
-                else:
-                    codec = 'aac'
-            elif file_path.suffix.lower() == '.flac':
-                codec = 'flac'
+            # --- 2. Advanced Metadata / Identifiers ---
+            # mutagen uses specific keys for MusicBrainz tags depending on the format
+            mb_artist_id = audio.get("musicbrainz_artistid", [None])[0]
+            mb_release_group_id = audio.get("musicbrainz_releasegroupid", [None])[0]
+            mb_release_id = audio.get("musicbrainz_albumid", [None])[0]
+            mb_track_id = audio.get("musicbrainz_trackid", [None])[0]
 
-            # --- Intelligent Track Number Extraction ---
+            year = audio.get("date", audio.get("originaldate", [""]))[0][:4]
+            label = audio.get("organization", audio.get("label", [""]))[0]
+            cat_num = audio.get("catalognumber", [""])[0]
+            barcode = audio.get("barcode", [""])[0]
+
+            # Track & Disc layout
             import re
 
-            track_num_raw = audio.get("tracknumber", [None])[0]
-            track_number = 0
+            def parse_num(val):
+                match = re.search(r"\d+", str(val))
+                return int(match.group()) if match else 1
 
-            if track_num_raw:
-                try:
-                    # Handle formats like "01", "1/12", "A1"
-                    clean_num = re.search(r"\d+", str(track_num_raw))
-                    if clean_num:
-                        track_number = int(clean_num.group())
-                except ValueError:
-                    pass
+            track_num = parse_num(audio.get("tracknumber", [0])[0])
+            disc_num = parse_num(audio.get("discnumber", [1])[0])
 
-            # Fallback: parse track number from filename (e.g., "01 - Track.flac")
-            if track_number == 0:
-                match = re.search(r"^(\d+)", file_path.name)
-                if match:
-                    track_number = int(match.group(1))
+            # --- 3. WATERFALL ID GENERATION ---
 
+            # Artist ID
+            artist_id = (
+                mb_artist_id
+                if mb_artist_id
+                else hashlib.md5(artist_name.encode()).hexdigest()
+            )
+
+            # Release Group ID (Conceptual Album)
+            if mb_release_group_id:
+                rg_id = f"rg_{mb_release_group_id}"
+            else:
+                # Fallback: Artist + Album Name
+                rg_id = hashlib.md5(f"{artist_id}_{album_name}".encode()).hexdigest()
+
+            # Release ID (Specific Edition)
+            if mb_release_id:
+                release_id = f"rel_{mb_release_id}"
+                release_title = album_name  # Rely on MB tagging
+            else:
+                # Fallback Signature: Combine metadata. If metadata is missing, the folder path creates the unique split.
+                folder_path = str(file_path.parent)
+                sig = f"{rg_id}_{year}_{label}_{cat_num}_{barcode}_{folder_path}"
+                release_id = hashlib.md5(sig.encode()).hexdigest()
+
+                # Try to create a helpful display name for the edition
+                edition_hints = [year, label, cat_num]
+                hints = [h for h in edition_hints if h]
+                release_title = (
+                    f"{album_name} [{' | '.join(hints)}]" if hints else album_name
+                )
+
+            # Track ID
+            track_id = (
+                mb_track_id
+                if mb_track_id
+                else hashlib.md5(
+                    f"{release_id}_{disc_num}_{track_num}_{title}".encode()
+                ).hexdigest()
+            )
+
+            # --- 4. DATABASE UPSERTS ---
+
+            # Insert Artist
+            cursor.execute(
+                "INSERT OR IGNORE INTO artists (id, mbid, name) VALUES (?, ?, ?)",
+                (artist_id, mb_artist_id, artist_name),
+            )
+
+            # Insert Release Group
+            cursor.execute(
+                "INSERT OR IGNORE INTO release_groups (id, mbid, artist_id, title) VALUES (?, ?, ?, ?)",
+                (rg_id, mb_release_group_id, artist_id, album_name),
+            )
+
+            # Insert Release
+            art_hash = self._extract_and_cache_art(file_path, release_id)
             cursor.execute(
                 """
-                INSERT OR REPLACE INTO media 
-                (path, title, artist, album, mime_type, codec, size, duration, art_hash, track_number)
+                INSERT OR IGNORE INTO releases 
+                (id, release_group_id, mbid, title, year, label, catalog_num, barcode, folder_path, art_hash)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
                 (
-                    str(file_path),
-                    title,
-                    artist,
-                    album,
-                    mime_type,
-                    codec,
-                    size,
-                    duration,
+                    release_id,
+                    rg_id,
+                    mb_release_id,
+                    release_title,
+                    year,
+                    label,
+                    cat_num,
+                    barcode,
+                    str(file_path.parent),
                     art_hash,
-                    track_number,
                 ),
             )
+
+            # Insert Track
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO tracks 
+                (id, release_id, mbid, title, track_number, disc_number, duration, path, mime_type, size)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+                (
+                    track_id,
+                    release_id,
+                    mb_track_id,
+                    title,
+                    track_num,
+                    disc_num,
+                    getattr(audio.info, "length", 0),
+                    str(file_path),
+                    f"audio/{file_path.suffix.lower().strip('.')}",
+                    file_path.stat().st_size,
+                ),
+            )
+
         except Exception as e:
-            logger.error(f"Failed to parse {file_path}: {e}")
+            print(f"Failed to index {file_path}: {e}")
 
     def _extract_and_cache_art(self, file_path, album_name):
         """Extracts embedded artwork and saves it using a hash of the album name."""
@@ -364,8 +482,8 @@ class UPnPServer:
         self.app.router.add_get("/api/config", self.api_get_config)
         self.app.router.add_post("/api/config", self.api_set_config)
         self.app.router.add_get("/api/search", self.api_search)
-        self.app.router.add_get("/api/albums", self.api_get_albums)
-        self.app.router.add_get("/api/artists", self.api_get_artists)
+        self.app.router.add_get("/api/albums", self.api_get_all_albums)
+        self.app.router.add_get("/api/artists", self.api_get_all_artists)
         self.app.router.add_get('/api/albums/{album_id}', self.api_get_album)
         self.app.router.add_get("/api/artists/{artist_name}", self.api_get_artist)
         self.app.router.add_static("/artist-art", str(MUSIC_LIBRARY_BASE))
@@ -439,7 +557,7 @@ class UPnPServer:
 
             # --- ROOT VIEW: List Artists ---
             if object_id == "0":
-                cursor.execute("SELECT DISTINCT artist FROM media ORDER BY artist")
+                cursor.execute("SELECT DISTINCT artist FROM tracks ORDER BY artist")
                 all_artists = cursor.fetchall()
                 total_matches = len(all_artists)
 
@@ -468,7 +586,7 @@ class UPnPServer:
             elif object_id.startswith("artist_"):
                 artist = urllib.parse.unquote(object_id.replace("artist_", ""))
                 cursor.execute(
-                    "SELECT DISTINCT album FROM media WHERE artist=? ORDER BY album",
+                    "SELECT DISTINCT album FROM tracks WHERE artist=? ORDER BY album",
                     (artist,),
                 )
                 all_albums = cursor.fetchall()
@@ -501,7 +619,7 @@ class UPnPServer:
                 album = urllib.parse.unquote(parts[2])
 
                 cursor.execute(
-                    "SELECT id, title, mime_type, size, duration, art_hash FROM media WHERE artist=? AND album=? ORDER BY track_number, title",
+                    "SELECT id, title, mime_type, size, duration, art_hash FROM tracks WHERE artist=? AND album=? ORDER BY track_number, title",
                     (artist, album),
                 )
                 all_tracks = cursor.fetchall()
@@ -569,42 +687,55 @@ class UPnPServer:
         )
 
     async def handle_media(self, request):
-        """Handles audio streaming specifically for the Web UI."""
+        import traceback
+        from pathlib import Path
 
         media_id = request.match_info["id"]
-        user_agent = request.headers.get("User-Agent", "")
-
-        # Query database for file location and codec
         cursor = self.library.conn.cursor()
-        cursor.execute("SELECT path, codec, mime_type FROM media WHERE id=?", (media_id,))
+
+        # 1. Query the new 'tracks' table instead of 'media'
+        cursor.execute("SELECT path, mime_type FROM tracks WHERE id=?", (media_id,))
         row = cursor.fetchone()
 
         if not row or not Path(row[0]).exists():
             return web.Response(status=404, text="Media not found")
 
-        original_path, codec, original_mime = row
+        original_path, original_mime = row
 
+        # 2. Derive the codec dynamically for the Transcoder
+        codec = "unknown"
+        lower_path = original_path.lower()
+        if lower_path.endswith(".m4a") or lower_path.endswith(".mp4"):
+            # We assume ALAC for m4a containers to trigger the transcoder check
+            codec = "alac"
+        elif lower_path.endswith(".flac"):
+            codec = "flac"
+
+        # 3. Transcoding & Delivery Logic
         try:
-            # Check if client requires transcoding
+            user_agent = request.headers.get("User-Agent", "")
+
+            # If you placed your BrowserCapabilities class in capabilities.py, import it:
+            from capabilities import BrowserCapabilities
+
             if BrowserCapabilities.needs_alac_transcoding(user_agent, codec):
-
-                # Request the transcoded file (waits if actively transcoding, or returns instantly from cache)
-                serve_path = await self.transcoder.get_transcoded_file(original_path, media_id)
+                # We assume you attached transcoder to self. If it's a global, just use `transcoder`
+                serve_path = await self.transcoder.get_transcoded_file(
+                    original_path, media_id
+                )
                 mime_type = "audio/flac"
-
             else:
-                # Native playback (Safari or DLNA Renderer)
                 serve_path = Path(original_path)
                 mime_type = original_mime
 
-            # aiohttp FileResponse natively perfectly handles HTTP 206 Range requests,
-            # allowing seamless seeking on the UI.
             response = web.FileResponse(serve_path)
             response.content_type = mime_type
             return response
 
-        except RuntimeError as e:
-            return web.Response(status=500, text=f"Transcoding error: {str(e)}")
+        except Exception as e:
+            print(f"\n--- STREAMING ERROR ---")
+            traceback.print_exc()
+            return web.Response(status=500, text=f"Streaming error: {str(e)}")
 
     async def handle_art(self, request):
         art_hash = request.match_info["hash"]
@@ -613,39 +744,6 @@ class UPnPServer:
         if art_path.exists():
             return web.FileResponse(art_path, headers={"Content-Type": "image/jpeg"})
         return web.Response(status=404)
-
-    async def api_get_album(self, request):
-        album_id = urllib.parse.unquote(request.match_info["album_id"])
-        cursor = self.library.conn.cursor()
-
-        cursor.execute(
-            "SELECT album, artist, art_hash FROM media WHERE album=? LIMIT 1",
-            (album_id,),
-        )
-        meta = cursor.fetchone()
-
-        if not meta:
-            return web.Response(status=404)
-
-        # --- NEW: Select Artist and Track Number, Order by Track Number ---
-        cursor.execute(
-            "SELECT id, title, duration, artist, track_number FROM media WHERE album=? ORDER BY track_number, title",
-            (album_id,),
-        )
-        tracks = [
-            {
-                "id": row[0],
-                "title": row[1],
-                "duration": row[2],
-                "artist": row[3],
-                "track_number": row[4],
-            }
-            for row in cursor.fetchall()
-        ]
-
-        return web.json_response(
-            {"title": meta[0], "artist": meta[1], "art_hash": meta[2], "tracks": tracks}
-        )
 
     async def _persist_config(self, config_data):
         """
@@ -833,99 +931,236 @@ class UPnPServer:
         )
 
     async def api_search(self, request):
-        query = request.query.get("q", "").lower()
-        if not query:
-            return web.json_response({"artists": [], "albums": [], "tracks": []})
+        import traceback
 
-        cursor = self.library.conn.cursor()
-        search_term = f"%{query}%"
+        try:
+            query = request.query.get("q", "").lower()
+            if not query:
+                return web.json_response({"artists": [], "albums": [], "tracks": []})
 
-        # 1. Fetch Tracks (Limit 10)
-        cursor.execute(
-            "SELECT id, title, artist, album, duration, art_hash FROM media WHERE title LIKE ? ORDER BY title LIMIT 10",
-            (search_term,),
-        )
-        tracks = [
-            {
-                "id": row[0],
-                "title": row[1],
-                "artist": row[2],
-                "album": row[3],
-                "duration": row[4],
-                "art": row[5],
-            }
-            for row in cursor.fetchall()
-        ]
+            cursor = self.library.conn.cursor()
+            search_term = f"%{query}%"
 
-        # 2. Fetch Albums (Limit 5)
-        cursor.execute(
-            "SELECT album, artist, art_hash FROM media WHERE album LIKE ? GROUP BY album ORDER BY album LIMIT 5",
-            (search_term,),
-        )
-        albums = [
-            {"title": row[0], "artist": row[1], "art_hash": row[2]}
-            for row in cursor.fetchall()
-        ]
-
-        # 3. Fetch Artists (Limit 5)
-        cursor.execute(
-            "SELECT artist, COUNT(DISTINCT album) FROM media WHERE artist LIKE ? GROUP BY artist ORDER BY artist LIMIT 5",
-            (search_term,),
-        )
-        artists = [{"name": row[0], "album_count": row[1]} for row in cursor.fetchall()]
-
-        return web.json_response(
-            {"tracks": tracks, "albums": albums, "artists": artists}
-        )
-
-    async def api_get_albums(self, request):
-        cursor = self.library.conn.cursor()
-        # Group by album to get unique albums, grab the first track's art and artist
-        cursor.execute(
-            "SELECT id, title, artist, album, art_hash FROM media GROUP BY album ORDER BY artist, album"
-        )
-        rows = cursor.fetchall()
-
-        albums = []
-        for row in rows:
-            albums.append(
+            # 1. Fetch Tracks (Limit 10)
+            cursor.execute(
+                """
+                SELECT t.id, t.title, a.name, rg.title, t.duration, r.art_hash
+                FROM tracks t
+                JOIN releases r ON t.release_id = r.id
+                JOIN release_groups rg ON r.release_group_id = rg.id
+                JOIN artists a ON rg.artist_id = a.id
+                WHERE t.title LIKE ? 
+                ORDER BY t.title LIMIT 10
+            """,
+                (search_term,),
+            )
+            tracks = [
                 {
-                    "id": row[3],  # Using the album name as the ID for the URL router
-                    "title": row[3],  # Album name
+                    "id": row[0],
+                    "title": row[1],
                     "artist": row[2],
-                    "art_hash": row[4],
+                    "album": row[3],
+                    "duration": row[4],
+                    "art": row[5],
                 }
+                for row in cursor.fetchall()
+            ]
+
+            # 2. Fetch Conceptual Albums / Release Groups (Limit 5)
+            cursor.execute(
+                """
+                SELECT rg.id, rg.title, a.name, MIN(r.art_hash)
+                FROM release_groups rg
+                JOIN artists a ON rg.artist_id = a.id
+                LEFT JOIN releases r ON rg.id = r.release_group_id
+                WHERE rg.title LIKE ? 
+                GROUP BY rg.id 
+                ORDER BY rg.title LIMIT 5
+            """,
+                (search_term,),
+            )
+            # We return the rg_id so the React Router knows exactly where to navigate
+            albums = [
+                {"id": row[0], "title": row[1], "artist": row[2], "art_hash": row[3]}
+                for row in cursor.fetchall()
+            ]
+
+            # 3. Fetch Artists (Limit 5)
+            cursor.execute(
+                """
+                SELECT a.name, COUNT(DISTINCT rg.id)
+                FROM artists a
+                LEFT JOIN release_groups rg ON a.id = rg.artist_id
+                WHERE a.name LIKE ? 
+                GROUP BY a.id 
+                ORDER BY a.name LIMIT 5
+            """,
+                (search_term,),
+            )
+            artists = [
+                {"name": row[0], "album_count": row[1]} for row in cursor.fetchall()
+            ]
+
+            return web.json_response(
+                {"tracks": tracks, "albums": albums, "artists": artists}
             )
 
-        return web.json_response(albums)
+        except Exception as e:
+            print(f"\n--- CRITICAL ERROR IN api_search ---")
+            traceback.print_exc()
+            print(f"------------------------------------\n")
+            return web.json_response({"error": str(e)}, status=500)
 
-    async def api_get_artists(self, request):
-        cursor = self.library.conn.cursor()
-        # Count how many unique albums each artist has
-        cursor.execute(
-            "SELECT artist, COUNT(DISTINCT album) FROM media GROUP BY artist ORDER BY artist"
-        )
-        rows = cursor.fetchall()
+    async def api_get_all_albums(self, request):
+        import traceback
 
-        artists = []
-        for row in rows:
-            name = row[0]
-            # Fetch or retrieve cached assets
-            assets = get_artist_assets(name)
+        try:
+            cursor = self.library.conn.cursor()
 
-            artists.append(
-                {
-                    "name": name,
-                    "album_count": row[1],
-                    "thumbnail": assets["thumbnail"],
-                    "background": assets["background"],
-                    "logo": assets["logo"],
-                }
+            # We grab the art_hash from the FIRST release in the group to use as the cover
+            cursor.execute("""
+                SELECT rg.id, rg.title, a.name, MIN(r.art_hash) 
+                FROM release_groups rg
+                JOIN artists a ON rg.artist_id = a.id
+                JOIN releases r ON rg.id = r.release_group_id
+                GROUP BY rg.id
+                ORDER BY a.name, rg.title
+            """)
+
+            albums = [
+                {"id": row[0], "title": row[1], "artist": row[2], "art_hash": row[3]}
+                for row in cursor.fetchall()
+            ]
+            return web.json_response(albums)
+
+        except Exception as e:
+            print(f"\n--- CRITICAL ERROR IN api_get_all_albums ---")
+            traceback.print_exc()
+            print(f"--------------------------------------------\n")
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def api_get_album(self, request):
+        import traceback
+
+        try:
+            rg_id = request.match_info["album_id"]
+            cursor = self.library.conn.cursor()
+
+            # Get Group Meta (Album Title and Artist Name)
+            cursor.execute(
+                "SELECT title, (SELECT name FROM artists WHERE id=artist_id) FROM release_groups WHERE id=?",
+                (rg_id,),
             )
-        return web.json_response(artists)
+            meta = cursor.fetchone()
+
+            if not meta:
+                return web.json_response(
+                    {"error": "Album not found in database"}, status=404
+                )
+
+            album_title = meta[0]
+            album_artist = meta[1]
+
+            # Get all Releases (Editions) for this group
+            cursor.execute(
+                "SELECT id, title, year, label, catalog_num, art_hash FROM releases WHERE release_group_id=? ORDER BY year",
+                (rg_id,),
+            )
+            release_rows = cursor.fetchall()
+
+            editions = []
+            for r_row in release_rows:
+                rel_id = r_row[0]
+
+                # FIX: Removed the non-existent 'artist' column from the tracks query.
+                cursor.execute(
+                    "SELECT id, title, duration, track_number, disc_number FROM tracks WHERE release_id=? ORDER BY disc_number, track_number",
+                    (rel_id,),
+                )
+
+                # We inject the album_artist directly into the track dictionary for the React UI
+                tracks = [
+                    {
+                        "id": t[0],
+                        "title": t[1],
+                        "duration": t[2],
+                        "track_number": t[3],
+                        "disc_number": t[4],
+                        "artist": album_artist,
+                    }
+                    for t in cursor.fetchall()
+                ]
+
+                editions.append(
+                    {
+                        "id": rel_id,
+                        "edition_title": r_row[1],
+                        "year": r_row[2],
+                        "label": r_row[3],
+                        "catalog": r_row[4],
+                        "art_hash": r_row[5],
+                        "tracks": tracks,
+                    }
+                )
+
+            return web.json_response(
+                {"title": album_title, "artist": album_artist, "editions": editions}
+            )
+
+        except Exception as e:
+            print(f"\n--- CRITICAL ERROR IN api_get_album ---")
+            traceback.print_exc()
+            print(f"----------------------------------------\n")
+            # Always return valid JSON, even on a total crash, so React doesn't break
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def api_get_all_artists(self, request):
+        import traceback
+
+        try:
+            cursor = self.library.conn.cursor()
+
+            # Count how many unique conceptual albums (release groups) each artist has
+            cursor.execute("""
+                SELECT a.name, COUNT(DISTINCT rg.id) 
+                FROM artists a
+                LEFT JOIN release_groups rg ON a.id = rg.artist_id
+                GROUP BY a.id
+                ORDER BY a.name
+            """)
+            rows = cursor.fetchall()
+
+            # Fetch the rich assets from our caching system
+            from artist_art import get_artist_assets
+
+            artists = []
+            for row in rows:
+                name = row[0]
+                if not name:
+                    continue
+
+                assets = get_artist_assets(name)
+
+                artists.append(
+                    {
+                        "name": name,
+                        "album_count": row[1],
+                        "thumbnail": assets.get("thumbnail", ""),
+                        "background": assets.get("background", ""),
+                        "logo": assets.get("logo", ""),
+                    }
+                )
+
+            return web.json_response(artists)
+
+        except Exception as e:
+            print(f"\n--- CRITICAL ERROR IN api_get_all_artists ---")
+            traceback.print_exc()
+            print(f"---------------------------------------------\n")
+            return web.json_response({"error": str(e)}, status=500)
 
     async def api_get_artist(self, request):
-        import traceback  # Helps us catch exact error line numbers
+        import traceback
 
         try:
             import urllib.parse
@@ -933,28 +1168,45 @@ class UPnPServer:
             artist_name = urllib.parse.unquote(request.match_info["artist_name"])
             cursor = self.library.conn.cursor()
 
-            # Group by album to get unique albums for this specific artist
-            cursor.execute(
-                "SELECT id, title, artist, album, art_hash FROM media WHERE artist=? GROUP BY album ORDER BY album",
-                (artist_name,),
-            )
-            rows = cursor.fetchall()
+            # 1. Look up the new Relational Artist ID
+            cursor.execute("SELECT id FROM artists WHERE name=?", (artist_name,))
+            artist_row = cursor.fetchone()
 
-            if not rows:
-                return web.Response(status=404, text="Artist not found in database.")
+            if not artist_row:
+                return web.json_response(
+                    {"error": "Artist not found in database."}, status=404
+                )
+
+            artist_id = artist_row[0]
+
+            # 2. Get all conceptual albums (Release Groups) for this specific artist
+            # We grab the art_hash from the FIRST edition to use as the cover thumbnail
+            cursor.execute(
+                """
+                SELECT rg.id, rg.title, MIN(r.art_hash)
+                FROM release_groups rg
+                LEFT JOIN releases r ON rg.id = r.release_group_id
+                WHERE rg.artist_id = ?
+                GROUP BY rg.id
+                ORDER BY rg.title
+            """,
+                (artist_id,),
+            )
 
             albums = []
-            for row in rows:
+            for row in cursor.fetchall():
                 albums.append(
                     {
-                        "id": row[3],  # Using album name as the router ID
-                        "title": row[3],  # Album name
-                        "artist": row[2],
-                        "art_hash": row[4],
+                        "id": row[
+                            0
+                        ],  # This uses the new rg_ ID so clicking it works perfectly!
+                        "title": row[1],
+                        "artist": artist_name,
+                        "art_hash": row[2],
                     }
                 )
 
-            # Fetch the rich assets from our new caching system!
+            # 3. Fetch the rich assets from our new caching system!
             from artist_art import get_artist_assets
 
             assets = get_artist_assets(artist_name)
@@ -973,7 +1225,7 @@ class UPnPServer:
             print(f"\n--- CRITICAL ERROR IN api_get_artist ---")
             traceback.print_exc()
             print(f"----------------------------------------\n")
-            return web.Response(status=500, text=str(e))
+            return web.json_response({"error": str(e)}, status=500)
 
 
 # ==========================================

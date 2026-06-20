@@ -129,8 +129,8 @@ export default function SearchBar() {
                   <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 px-4">Albums</h3>
                   <ul>
                     {results.albums.map(album => (
-                      <li key={`alb-${album.title}`}>
-                        <button onClick={() => handleNavigate('album', album.title)} className="w-full text-left px-4 py-2 flex items-center hover:bg-gray-800 transition-colors">
+                      <li key={`alb-${album.id}`}>
+                        <button onClick={() => handleNavigate('album', album.id)} className="w-full text-left px-4 py-2 flex items-center hover:bg-gray-800 transition-colors">
                           <div className="h-10 w-10 rounded bg-gray-800 mr-3 overflow-hidden border border-gray-700">
                             {album.art_hash ? <img src={`/art/${album.art_hash}`} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center">💿</div>}
                           </div>
