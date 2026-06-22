@@ -1,7 +1,9 @@
 import { useEffect, useRef } from 'react';
 import { usePlayerStore } from './store';
+import { useNavigate } from 'react-router-dom';
 
 export default function AudioPlayer() {
+  const navigate = useNavigate();
   const audioRef = useRef(null);
   const { 
     currentTrack, 
@@ -14,6 +16,15 @@ export default function AudioPlayer() {
     setTrackProgress, 
     seekTo 
   } = usePlayerStore();
+
+  const handleNavigateToAlbum = () => {
+    if (currentTrack?.album_id) {
+      // Navigate seamlessly without interrupting the <audio> element
+      navigate(`/album/${encodeURIComponent(currentTrack.album_id)}`);
+    } else {
+      console.warn("No album ID available for this track.");
+    }
+  };
 
   useEffect(() => {
     if (audioRef.current) {
@@ -41,15 +52,38 @@ export default function AudioPlayer() {
       />
 
       {/* Track Info */}
-      <div className="flex items-center w-1/3">
-        {currentTrack.art && (
-          <img src={`/art/${currentTrack.art}`} alt="Album Art" className="w-16 h-16 rounded shadow-lg mr-4" />
-        )}
-        <div>
-          <h4 className="font-bold text-lg">{currentTrack.title}</h4>
-          <p className="text-gray-400 text-sm">{currentTrack.artist}</p>
+      <div 
+          onClick={handleNavigateToAlbum}
+          className={`flex items-center w-1/3 gap-4 p-2 -ml-2 rounded-xl transition-all ${
+            currentTrack?.album_id 
+              ? 'cursor-pointer group hover:bg-gray-800/60' 
+              : ''
+          }`}
+          title={currentTrack?.album_id ? "View Album" : ""}
+        >
+          {currentTrack ? (
+            <>
+              <div className="w-14 h-14 bg-gray-800 rounded-md overflow-hidden shadow-md group-hover:shadow-lg transition-shadow flex-shrink-0">
+                {currentTrack.art ? (
+                  <img src={`/art/${currentTrack.art}`} alt="Cover" className="w-full h-full object-cover" />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center text-xl">🎵</div>
+                )}
+              </div>
+              <div className="flex flex-col overflow-hidden">
+                {/* FormattedTitle can be used here if you imported it previously! */}
+                <div className="text-sm font-bold text-gray-100 truncate group-hover:text-blue-400 transition-colors">
+                  {currentTrack.title}
+                </div>
+                <div className="text-xs text-gray-400 truncate">
+                  {currentTrack.artist}
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="text-sm text-gray-500 font-medium">Not Playing</div>
+          )}
         </div>
-      </div>
 
       {/* Controls */}
       <div className="flex flex-col items-center justify-center w-1/3">
@@ -61,7 +95,7 @@ export default function AudioPlayer() {
           <button onClick={nextTrack} className="hover:text-blue-400 text-gray-300">⏭</button>
         </div>
         
-        {/* Progress bar added here */}
+        {/* Progress bar */}
         <div className="w-full mt-2">
           <input 
             type="range" 

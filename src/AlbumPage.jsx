@@ -74,7 +74,8 @@ export default function AlbumPage() {
       ...t,
       artist: t.artist || albumData.artist,
       album: albumData.title,
-      art: activeEdition.art_hash
+      art: activeEdition.art_hash,
+      album_id: albumId
     }));
     
     setPlaylist(playlist);

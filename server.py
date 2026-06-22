@@ -1108,7 +1108,7 @@ class UPnPServer:
             # Fetch Tracks (using standard_search)
             cursor.execute(
                 """
-                SELECT t.id, t.title, ta.name, rg.title, t.duration, r.art_hash
+                SELECT t.id, t.title, ta.name, rg.title, t.duration, r.art_hash, rg.id
                 FROM tracks t
                 JOIN artists ta ON t.artist_id = ta.id
                 JOIN releases r ON t.release_id = r.id
@@ -1126,6 +1126,7 @@ class UPnPServer:
                     "album": row[3],
                     "duration": row[4],
                     "art": row[5],
+                    "album_id": row[6],
                 }
                 for row in cursor.fetchall()
             ]
