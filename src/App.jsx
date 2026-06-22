@@ -1,4 +1,5 @@
 import { Routes, Route, NavLink, useLocation, Navigate } from 'react-router-dom';
+import useScrollRestore from './useScrollRestore';
 import SearchBar from './SearchBar';
 import DiscoveryView from './DiscoveryView';
 import AlbumPage from './AlbumPage';
@@ -18,6 +19,7 @@ function NotFound() {
 
 export default function App() {
   const location = useLocation();
+  const scrollRef = useScrollRestore();
 
   // Highlight "My Library" if we are anywhere inside the library, album, or artist routes
   const isLibraryActive = location.pathname.startsWith('/library') || 
@@ -61,9 +63,8 @@ export default function App() {
           <div className="w-full max-w-2xl"><SearchBar /></div>
         </header>
 
-        <div className="flex-1 overflow-y-auto custom-scrollbar">
+        <div ref={scrollRef} className="flex-1 overflow-y-auto custom-scrollbar">
           <div className="pb-32">
-            {/* The Router handles switching views seamlessly */}
             <Routes>
               <Route path="/" element={<Navigate to="/library" replace />} />
               <Route path="/library" element={<DiscoveryView />} />

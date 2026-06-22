@@ -25,6 +25,7 @@ from mutagen import File as MutagenFile
 from transcoder import AudioTranscoder
 from capabilities import BrowserCapabilities
 from artist_art import MUSIC_LIBRARY_BASE, get_artist_assets
+from normalization import ArtistNormalizer
 
 logger = logging.getLogger("AudiophileServer")
 
@@ -93,6 +94,7 @@ class MediaLibrary:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS artists (
                 id TEXT PRIMARY KEY,
+                normalized_key TEXT,
                 mbid TEXT,
                 name TEXT NOT NULL
             )
@@ -156,6 +158,57 @@ class MediaLibrary:
 
         self.conn.commit()
 
+        # Run the Deduplication Migration!
+        self._migrate_and_deduplicate_artists()
+
+    def _migrate_and_deduplicate_artists(self):
+        """Safely merges duplicate artists based on their normalized keys."""
+        cursor = self.conn.cursor()
+
+        # Safely add the column if it's an older database
+        try:
+            cursor.execute("ALTER TABLE artists ADD COLUMN normalized_key TEXT")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+
+        cursor.execute("SELECT id, name FROM artists")
+        all_artists = cursor.fetchall()
+
+        canonical_map = {}
+
+        for artist_id, raw_name in all_artists:
+            display_name, norm_key = ArtistNormalizer.normalize(raw_name)
+
+            if norm_key not in canonical_map:
+                # First time seeing this key: Promote it to Canonical
+                canonical_map[norm_key] = artist_id
+                cursor.execute(
+                    "UPDATE artists SET normalized_key=?, name=? WHERE id=?",
+                    (norm_key, display_name, artist_id),
+                )
+            else:
+                # Duplicate detected!
+                canonical_id = canonical_map[norm_key]
+                if canonical_id != artist_id:
+                    # 1. Reassign Albums (Release Groups)
+                    cursor.execute(
+                        "UPDATE release_groups SET artist_id=? WHERE artist_id=?",
+                        (canonical_id, artist_id),
+                    )
+                    # 2. Reassign Tracks
+                    cursor.execute(
+                        "UPDATE tracks SET artist_id=? WHERE artist_id=?",
+                        (canonical_id, artist_id),
+                    )
+                    # 3. Delete the Duplicate
+                    cursor.execute("DELETE FROM artists WHERE id=?", (artist_id,))
+
+        # Ensure fast, unique lookups going forward
+        cursor.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_artists_norm_key ON artists(normalized_key)"
+        )
+        self.conn.commit()
+
     def scan_directories(self, directories):
         logger.info("Starting media scan...")
         cursor = self.conn.cursor()
@@ -179,10 +232,13 @@ class MediaLibrary:
             # --- 1. Basic Metadata Extraction ---
             title = audio.get("title", [file_path.stem])[0]
 
-            # Extract both Track Artist and Album Artist
-            track_artist_name = audio.get("artist", ["Unknown Artist"])[0]
-            # Fallback: If Album Artist is missing, use Track Artist
-            album_artist_name = audio.get("albumartist", [track_artist_name])[0]
+            # Extract raw strings
+            raw_track_artist = audio.get("artist", ["Unknown Artist"])[0]
+            raw_album_artist = audio.get("albumartist", [raw_track_artist])[0]
+
+            # Normalize them!
+            track_display, track_norm = ArtistNormalizer.normalize(raw_track_artist)
+            album_display, album_norm = ArtistNormalizer.normalize(raw_album_artist)
 
             album_name = audio.get("album", ["Unknown Album"])[0]
 
@@ -212,21 +268,34 @@ class MediaLibrary:
 
             # --- 3. WATERFALL ID GENERATION ---
 
-            track_artist_id = (
-                mb_track_artist_id
-                if mb_track_artist_id
-                else hashlib.md5(track_artist_name.encode()).hexdigest()
+            def get_or_create_artist(norm_key, display_name, mbid):
+                """Checks if artist exists via normalized key. If not, creates one."""
+                cursor.execute(
+                    "SELECT id FROM artists WHERE normalized_key=?", (norm_key,)
+                )
+                row = cursor.fetchone()
+                if row:
+                    return row[0]
+
+                # Create deterministic ID from normalized key
+                new_id = hashlib.md5(norm_key.encode()).hexdigest()
+                cursor.execute(
+                    "INSERT INTO artists (id, normalized_key, mbid, name) VALUES (?, ?, ?, ?)",
+                    (new_id, norm_key, mbid, display_name),
+                )
+                return new_id
+
+            # Use the helper to safely retrieve or create the deduplicated artist IDs
+            track_artist_id = get_or_create_artist(
+                track_norm, track_display, mb_track_artist_id
             )
-            album_artist_id = (
-                mb_album_artist_id
-                if mb_album_artist_id
-                else hashlib.md5(album_artist_name.encode()).hexdigest()
+            album_artist_id = get_or_create_artist(
+                album_norm, album_display, mb_album_artist_id
             )
 
             if mb_release_group_id:
                 rg_id = f"rg_{mb_release_group_id}"
             else:
-                # Group by ALBUM ARTIST instead of Track Artist
                 rg_id = hashlib.md5(
                     f"{album_artist_id}_{album_name}".encode()
                 ).hexdigest()
@@ -1021,14 +1090,22 @@ class UPnPServer:
         import traceback
 
         try:
-            query = request.query.get("q", "").lower()
+            query = request.query.get("q", "")
             if not query:
                 return web.json_response({"artists": [], "albums": [], "tracks": []})
 
             cursor = self.library.conn.cursor()
-            search_term = f"%{query}%"
 
-            # 1. Fetch Tracks (Updated JOIN for Track Artist)
+            # 1. Standard raw search for Albums and Tracks
+            standard_search = f"%{query.lower()}%"
+
+            # 2. Normalized search for Artists
+            from normalization import ArtistNormalizer
+
+            _, norm_key = ArtistNormalizer.normalize(query)
+            artist_search = f"%{norm_key}%"
+
+            # Fetch Tracks (using standard_search)
             cursor.execute(
                 """
                 SELECT t.id, t.title, ta.name, rg.title, t.duration, r.art_hash
@@ -1036,10 +1113,10 @@ class UPnPServer:
                 JOIN artists ta ON t.artist_id = ta.id
                 JOIN releases r ON t.release_id = r.id
                 JOIN release_groups rg ON r.release_group_id = rg.id
-                WHERE t.title LIKE ? 
+                WHERE t.title LIKE ? COLLATE NOCASE
                 ORDER BY t.title LIMIT 10
             """,
-                (search_term,),
+                (standard_search,),
             )
             tracks = [
                 {
@@ -1053,36 +1130,35 @@ class UPnPServer:
                 for row in cursor.fetchall()
             ]
 
-            # 2. Fetch Conceptual Albums / Release Groups (Limit 5)
+            # Fetch Albums (using standard_search)
             cursor.execute(
                 """
                 SELECT rg.id, rg.title, a.name, MIN(r.art_hash)
                 FROM release_groups rg
                 JOIN artists a ON rg.artist_id = a.id
                 LEFT JOIN releases r ON rg.id = r.release_group_id
-                WHERE rg.title LIKE ? 
+                WHERE rg.title LIKE ? COLLATE NOCASE
                 GROUP BY rg.id 
                 ORDER BY rg.title LIMIT 5
             """,
-                (search_term,),
+                (standard_search,),
             )
-            # We return the rg_id so the React Router knows exactly where to navigate
             albums = [
                 {"id": row[0], "title": row[1], "artist": row[2], "art_hash": row[3]}
                 for row in cursor.fetchall()
             ]
 
-            # 3. Fetch Artists (Limit 5)
+            # Fetch Artists (using the highly accurate normalized artist_search!)
             cursor.execute(
                 """
                 SELECT a.name, COUNT(DISTINCT rg.id)
                 FROM artists a
                 LEFT JOIN release_groups rg ON a.id = rg.artist_id
-                WHERE a.name LIKE ? 
+                WHERE a.normalized_key LIKE ? 
                 GROUP BY a.id 
                 ORDER BY a.name LIMIT 5
             """,
-                (search_term,),
+                (artist_search,),
             )
             artists = [
                 {"name": row[0], "album_count": row[1]} for row in cursor.fetchall()
@@ -1213,10 +1289,11 @@ class UPnPServer:
             cursor = self.library.conn.cursor()
 
             # Count how many unique conceptual albums (release groups) each artist has
+            # Change JOIN to LEFT JOIN to include artists from compilations.
             cursor.execute("""
                 SELECT a.name, COUNT(DISTINCT rg.id) 
                 FROM artists a
-                LEFT JOIN release_groups rg ON a.id = rg.artist_id
+                JOIN release_groups rg ON a.id = rg.artist_id  
                 GROUP BY a.id
                 ORDER BY a.name
             """)

@@ -1,30 +1,33 @@
-import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useLibraryStore } from './store';
 import AlbumGrid from './AlbumGrid';
 import ArtistGrid from './ArtistGrid';
 
 export default function DiscoveryView() {
-  const [activeTab, setActiveTab] = useState('albums');
-  const [items, setItems] = useState([]);
-  const [isLoading, setIsLoading] = useState(true);
   const navigate = useNavigate();
+  
+  // 1. URL-Driven State
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeTab = searchParams.get('tab') || 'albums';
 
-  // The perfectly clean fetch logic (no more selectedAlbum checks!)
+  // 2. Cached Global State
+  const { albums, artists, fetchAlbums, fetchArtists, albumsLoaded, artistsLoaded } = useLibraryStore();
+
+  // Fetch only what we need, and only if it isn't already cached
   useEffect(() => {
-    setIsLoading(true);
-    const endpoint = activeTab === 'albums' ? '/api/albums' : '/api/artists';
-    
-    fetch(endpoint)
-      .then(res => res.json())
-      .then(data => {
-        setItems(data);
-        setIsLoading(false);
-      })
-      .catch(err => {
-        console.error("Failed to load library:", err);
-        setIsLoading(false);
-      });
-  }, [activeTab]); // We only care about the active tab changing now
+    if (activeTab === 'albums') fetchAlbums();
+    if (activeTab === 'artists') fetchArtists();
+  }, [activeTab, fetchAlbums, fetchArtists]);
+
+  // Determine loading state based on the active tab
+  const isLoading = activeTab === 'albums' ? !albumsLoaded : !artistsLoaded;
+  const items = activeTab === 'albums' ? albums : artists;
+
+  // Change tab by pushing a new URL parameter
+  const handleTabChange = (tab) => {
+    setSearchParams({ tab });
+  };
 
   return (
     <div className="w-full max-w-screen-2xl mx-auto px-6 py-8 pb-32 animate-fade-in">
@@ -35,13 +38,13 @@ export default function DiscoveryView() {
         
         <div className="flex space-x-6 text-lg font-medium">
           <button 
-            onClick={() => setActiveTab('albums')}
+            onClick={() => handleTabChange('albums')}
             className={`transition-colors ${activeTab === 'albums' ? 'text-blue-500 border-b-2 border-blue-500' : 'text-gray-400 hover:text-white focus:outline-none'}`}
           >
             Albums
           </button>
           <button 
-            onClick={() => setActiveTab('artists')}
+            onClick={() => handleTabChange('artists')}
             className={`transition-colors ${activeTab === 'artists' ? 'text-blue-500 border-b-2 border-blue-500' : 'text-gray-400 hover:text-white focus:outline-none'}`}
           >
             Artists
@@ -59,7 +62,7 @@ export default function DiscoveryView() {
           </div>
         </div>
       ) : (
-        /* Render Grids & wire them directly to the Router URL */
+        /* Render Grids */
         activeTab === 'albums' 
           ? <AlbumGrid albums={items} onAlbumClick={(id) => navigate(`/album/${encodeURIComponent(id)}`)} /> 
           : <ArtistGrid artists={items} onArtistClick={(name) => navigate(`/artist/${encodeURIComponent(name)}`)} />

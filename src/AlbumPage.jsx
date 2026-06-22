@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { usePlayerStore } from './store';
+import FormattedTitle from './FormattedTitle';
 
 export default function AlbumPage() {
   const { albumId } = useParams();
@@ -115,7 +116,12 @@ export default function AlbumPage() {
 
         <div className="flex flex-col justify-end">
           <h2 className="text-sm font-bold text-blue-400 uppercase tracking-widest mb-2">Album</h2>
-          <h1 className="text-4xl md:text-6xl font-extrabold mb-4 leading-tight">{albumData.title}</h1>
+          <h1 className="text-4xl md:text-6xl font-extrabold mb-4 leading-tight">
+            <FormattedTitle 
+              title={albumData.title} 
+              spanClassName="text-2xl md:text-4xl text-gray-400/80 font-bold ml-3" 
+            />
+          </h1>
           <h2 className="text-2xl text-gray-400 mb-6">{albumData.artist}</h2>
           
           {/* 1. EDITIONS SELECTOR */}
@@ -133,7 +139,9 @@ export default function AlbumPage() {
                         : 'bg-gray-900 border-gray-700 text-gray-400 hover:bg-gray-800'
                     }`}
                   >
-                    {edition.edition_title || `Edition ${idx + 1}`}
+                    {edition.edition_title 
+                      ? <FormattedTitle title={edition.edition_title} spanClassName="text-[0.85em] opacity-75 ml-1" /> 
+                      : `Edition ${idx + 1}`}
                   </button>
                 ))}
               </div>

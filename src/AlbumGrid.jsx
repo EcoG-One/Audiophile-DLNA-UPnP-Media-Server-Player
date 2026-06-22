@@ -1,3 +1,5 @@
+import FormattedTitle from './FormattedTitle';
+
 export default function AlbumGrid({ albums, onAlbumClick }) {
   
   // Safety net
@@ -45,8 +47,8 @@ export default function AlbumGrid({ albums, onAlbumClick }) {
           </div>
 
           {/* Typography */}
-          <h3 className="text-base font-bold text-gray-100 truncate group-hover:text-blue-400 transition-colors">
-            {album.title}
+          <h3 className="text-sm font-bold text-white truncate" title={album.title}>
+            <FormattedTitle title={album.title} />
           </h3>
           <p className="text-sm text-gray-400 truncate">
             {album.artist}

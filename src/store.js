@@ -26,3 +26,32 @@ export const usePlayerStore = create((set) => ({
     return state;
   })
 }));
+
+export const useLibraryStore = create((set, get) => ({
+  albums: [],
+  artists: [],
+  albumsLoaded: false,
+  artistsLoaded: false,
+
+  fetchAlbums: async () => {
+    if (get().albumsLoaded) return; // Prevent re-fetching if already cached
+    try {
+      const res = await fetch('/api/albums');
+      const data = await res.json();
+      set({ albums: data, albumsLoaded: true });
+    } catch (err) {
+      console.error("Failed to fetch albums:", err);
+    }
+  },
+
+  fetchArtists: async () => {
+    if (get().artistsLoaded) return; // Prevent re-fetching if already cached
+    try {
+      const res = await fetch('/api/artists');
+      const data = await res.json();
+      set({ artists: data, artistsLoaded: true });
+    } catch (err) {
+      console.error("Failed to fetch artists:", err);
+    }
+  }
+}));

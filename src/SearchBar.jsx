@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import { useState, useEffect, useRef } from 'react';
 import { usePlayerStore } from './store';
+import FormattedTitle from './FormattedTitle';
 
 export default function SearchBar() {
   const navigate = useNavigate();
@@ -134,9 +135,8 @@ export default function SearchBar() {
                           <div className="h-10 w-10 rounded bg-gray-800 mr-3 overflow-hidden border border-gray-700">
                             {album.art_hash ? <img src={`/art/${album.art_hash}`} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center">💿</div>}
                           </div>
-                          <div>
-                            <p className="text-sm font-medium text-gray-100">{album.title}</p>
-                            <p className="text-xs text-gray-400">{album.artist}</p>
+                          <div className="font-medium text-white truncate" title={album.title}>
+                            <FormattedTitle title={album.title} />
                           </div>
                         </button>
                       </li>

@@ -40,7 +40,7 @@ export default function ArtistPage() {
       </button>
 
       {/* Hero Section */}
-<div className="relative w-full h-64 md:h-80 lg:h-96 rounded-xl overflow-hidden mb-12 shadow-2xl border border-gray-800">
+<div className="relative w-full aspect-video rounded-xl overflow-hidden mb-12 shadow-2xl border border-gray-800 bg-gray-900">
   
   {/* Background Fanart & Gradient Overlay */}
   {artistData.background ? (
