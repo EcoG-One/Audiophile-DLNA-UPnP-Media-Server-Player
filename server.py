@@ -317,14 +317,14 @@ class MediaLibrary:
             from mutagen import File
             from mutagen import MutagenError
 
-            # 1. OPEN THE AUDIO FILE (This must happen first!)
+            # 1. OPEN THE AUDIO FILE
             audio = File(file_path, easy=True)
             if audio is None:
                 return
 
             cursor = self.conn.cursor()
 
-            # --- 2. HELPER: Safely extract tags avoiding empty list crashes ---
+            # --- 2. HELPER: Safely extract tags ---
             def get_tag(key, default=None):
                 val = audio.get(key)
                 return val[0] if val else default
@@ -346,7 +346,6 @@ class MediaLibrary:
             mb_album_artist_id = get_tag(
                 "musicbrainz_albumartistid", mb_track_artist_id
             )
-
             mb_release_group_id = get_tag("musicbrainz_releasegroupid")
             mb_release_id = get_tag("musicbrainz_albumid")
             mb_track_id = get_tag("musicbrainz_trackid")
@@ -366,10 +365,9 @@ class MediaLibrary:
             disc_num = parse_num(get_tag("discnumber", 1))
 
             # --- 5. AUDIO QUALITY ANALYSIS ---
-            # (Happens safely because 'audio' is guaranteed to exist here)
             metrics = AudioAnalyzer.analyze(file_path, audio)
 
-            # --- 6. WATERFALL ID GENERATION ---
+            # --- 6. STRICT DETERMINISTIC HASHING ---
             def get_or_create_artist(norm_key, display_name, mbid):
                 cursor.execute(
                     "SELECT id FROM artists WHERE normalized_key=?", (norm_key,)
@@ -391,42 +389,30 @@ class MediaLibrary:
                 album_norm, album_display, mb_album_artist_id
             )
 
-            if mb_release_group_id:
-                rg_id = f"rg_{mb_release_group_id}"
-            else:
-                rg_id = hashlib.md5(
-                    f"{album_artist_id}_{album_name_normalized.lower()}".encode()
-                ).hexdigest()
+            # MASTER ALBUM HASH: Force identical titles to merge regardless of MusicBrainz tags
+            rg_id = hashlib.md5(
+                f"{album_artist_id}_{album_name_normalized.lower()}".encode()
+            ).hexdigest()
 
-            if mb_release_id:
-                release_id = f"rel_{mb_release_id}_{metrics['quality_rank']}"
-                release_title = album_name_raw
-            else:
-                folder_path = str(file_path.parent)
+            # SPECIFIC EDITION HASH: Force folder paths to be the ultimate glue
+            folder_path = str(file_path.parent)
+            sig = f"{rg_id}_{folder_path}_{metrics['quality_rank']}"
+            release_id = hashlib.md5(sig.encode()).hexdigest()
 
-                # Hash ONLY the folder path and quality. This stops tracks with
-                # different 'year' or 'label' tags from breaking into invisible albums!
-                sig = f"{rg_id}_{folder_path}_{metrics['quality_rank']}"
-                release_id = hashlib.md5(sig.encode()).hexdigest()
-
-                # Strip "(Disc 1)" or "[CD 2]" from the title so multi-disc folders align perfectly
-                clean_title = re.sub(
-                    r"(?i)\s*[\(\[]?(disc|cd)\s*\d+[\)\]]?", "", album_name_raw
-                ).strip()
-
-                edition_hints = [year, label, cat_num]
-                hints = [h for h in edition_hints if h]
-                release_title = (
-                    f"{clean_title} [{' | '.join(hints)}]" if hints else clean_title
-                )
-
-            track_id = (
-                mb_track_id
-                if mb_track_id
-                else hashlib.md5(
-                    f"{release_id}_{disc_num}_{track_num}_{title}".encode()
-                ).hexdigest()
+            # Clean edition title for UI display
+            clean_title = re.sub(
+                r"(?i)\s*[\(\[]?(disc|cd)\s*\d+[\)\]]?", "", album_name_raw
+            ).strip()
+            edition_hints = [year, label, cat_num]
+            hints = [h for h in edition_hints if h]
+            release_title = (
+                f"{clean_title} [{' | '.join(hints)}]" if hints else clean_title
             )
+
+            # TRACK HASH
+            track_id = hashlib.md5(
+                f"{release_id}_{disc_num}_{track_num}_{title}".encode()
+            ).hexdigest()
 
             # --- 7. DATABASE UPSERTS ---
             cursor.execute(
@@ -442,7 +428,7 @@ class MediaLibrary:
                 (id, release_group_id, mbid, title, year, label, catalog_num, barcode, folder_path, art_hash, 
                  quality_text, quality_rank, codec, sample_rate, bit_depth)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+                """,
                 (
                     release_id,
                     rg_id,
@@ -467,7 +453,7 @@ class MediaLibrary:
                 INSERT OR REPLACE INTO tracks 
                 (id, release_id, artist_id, mbid, title, track_number, disc_number, duration, path, mime_type, size)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+                """,
                 (
                     track_id,
                     release_id,
@@ -483,9 +469,7 @@ class MediaLibrary:
                 ),
             )
 
-        # --- 8. BULLETPROOF ERROR HANDLING ---
         except MutagenError as e:
-            # Cleanly skips fake, corrupted, or unreadable audio files
             print(f"⚠️ [SKIP] Corrupt or unreadable audio file '{file_path.name}': {e}")
             return
         except Exception as e:
