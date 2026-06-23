@@ -7,6 +7,8 @@ export default function AlbumPage() {
   const { albumId } = useParams();
   const navigate = useNavigate();
   const [albumData, setAlbumData] = useState(null);
+  const [activeEditionId, setActiveEditionId] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
   
   // State for selectors
   const [selectedEditionIndex, setSelectedEditionIndex] = useState(0);
@@ -16,19 +18,21 @@ export default function AlbumPage() {
   const { playTrack, setPlaylist, currentTrack, isPlaying } = usePlayerStore();
 
   useEffect(() => {
+    setIsLoading(true);
     fetch(`/api/albums/${encodeURIComponent(albumId)}`)
       .then(res => res.json())
       .then(data => {
+        
         // --- SMART CONSOLIDATION LAYER ---
-        // Merges fragmented multi-disc releases (caused by folder splits) back into a single edition
         if (data.editions) {
           const mergedEditions = [];
           data.editions.forEach(edition => {
+            
+            // ROBUST MERGE: If the title and the audio quality are the same, 
+            // merge them! This effortlessly combines CD1 and CD2 folders.
             const match = mergedEditions.find(m => 
               m.edition_title === edition.edition_title && 
-              m.year === edition.year && 
-              m.label === edition.label &&
-              m.catalog === edition.catalog
+              m.quality_rank === edition.quality_rank
             );
 
             if (match) {
@@ -37,6 +41,7 @@ export default function AlbumPage() {
               mergedEditions.push({ ...edition, tracks: [...edition.tracks] });
             }
           });
+          
           data.editions = mergedEditions;
         }
 
@@ -138,17 +143,36 @@ export default function AlbumPage() {
               <div className="flex flex-wrap gap-2">
                 {albumData.editions.map((edition, idx) => (
                   <button
-                    key={edition.id}
-                    onClick={() => handleEditionChange(idx)}
-                    className={`px-4 py-2 rounded-full text-sm font-medium border transition-colors ${
-                      idx === selectedEditionIndex 
-                        ? 'bg-blue-600 border-blue-500 text-white shadow-lg' 
-                        : 'bg-gray-900 border-gray-700 text-gray-400 hover:bg-gray-800'
+                    key={edition.release_id || idx}
+                    onClick={() => handleEditionChange(idx)}  
+                    className={`w-full text-left px-4 py-3 rounded-lg flex items-center justify-between transition-all ${
+                      selectedEditionIndex === idx            
+                        ? 'bg-blue-600/20 border-l-4 border-blue-500 text-white'
+                        : 'hover:bg-gray-800 text-gray-400 border-l-4 border-transparent'
                     }`}
                   >
-                    {edition.edition_title 
-                      ? <FormattedTitle title={edition.edition_title} spanClassName="text-[0.85em] opacity-75 ml-1" /> 
-                      : `Edition ${idx + 1}`}
+                    <div className="flex flex-col">
+                      <span className="font-medium">
+                        {edition.edition_title 
+                          ? <FormattedTitle title={edition.edition_title} spanClassName="text-[0.85em] opacity-75 ml-1" /> 
+                          : `Edition ${idx + 1}`}
+                      </span>
+                      
+                      {/* The Audiophile Badge */}
+                      {edition.quality_text && (
+                        <span className={`text-[0.75em] mt-1 tracking-wide font-medium flex items-center gap-2 ${
+                          edition.quality_rank >= 30 ? 'text-amber-400' : 
+                          edition.quality_rank >= 20 ? 'text-blue-400' : 'text-gray-500'
+                        }`}>
+                          {/* Render a tiny star for Hi-Res */}
+                          {edition.quality_rank >= 30 && <span>★</span>}
+                          
+                          {edition.quality_text} 
+                          <span className="text-gray-600 mx-1">|</span> 
+                          {edition.codec} {edition.bit_depth ? `• ${edition.bit_depth}-bit` : ''} {edition.sample_rate ? `• ${edition.sample_rate / 1000}kHz` : ''}
+                        </span>
+                      )}
+                    </div>
                   </button>
                 ))}
               </div>

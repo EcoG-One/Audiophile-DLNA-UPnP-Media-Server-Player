@@ -4,7 +4,7 @@ import unicodedata
 class ArtistNormalizer:
     # Extensible list of articles across multiple languages
     ARTICLES = {'the', 'a', 'an', 'le', 'la', 'les', 'der', 'die', 'das', 'el', 'los', 'las'}
-    
+
     @classmethod
     def normalize(cls, raw_name: str):
         """
@@ -13,27 +13,27 @@ class ArtistNormalizer:
         """
         if not raw_name or not raw_name.strip():
             return "Unknown Artist", "unknown_artist"
-            
+
         # 1. Unicode Normalization (converts weird accented characters to standard forms)
         name = unicodedata.normalize('NFKD', raw_name).strip()
-        
+
         # 2. Build dynamic regex patterns for articles
         articles_pattern = '|'.join(cls.ARTICLES)
-        
+
         # Remove trailing articles (e.g., "Beatles, The" -> "Beatles")
         trailing_regex = re.compile(rf',\s*({articles_pattern})$', re.IGNORECASE)
         name = trailing_regex.sub('', name)
-        
+
         # Remove leading articles (e.g., "The Beatles" -> "Beatles")
         leading_regex = re.compile(rf'^({articles_pattern})\s+', re.IGNORECASE)
         name = leading_regex.sub('', name)
-        
+
         # 3. Clean up whitespace
         name = re.sub(r'\s+', ' ', name).strip()
-        
+
         # 4. Generate the canonical matching key
         normalized_key = name.lower()
-        
+
         # 5. Generate the Canonical Display Name
         # If the original name was entirely lowercase, we Title Case it.
         # Otherwise, we preserve the original intentional capitalization (e.g., "AC/DC", "deadmau5").
@@ -41,5 +41,30 @@ class ArtistNormalizer:
             display_name = name.title()
         else:
             display_name = name
-            
+
         return display_name, normalized_key
+
+
+
+class AlbumNormalizer:
+    @classmethod
+    def normalize(cls, raw_title: str):
+        """
+        Strips all text inside () or [] to group editions together.
+        Example: "The Dark Side of the Moon (2011 Remaster)" -> "The Dark Side of the Moon"
+        """
+        if not raw_title:
+            return "Unknown Album"
+
+        # Remove anything inside parentheses () or brackets []
+        normalized = re.sub(r"\(.*?\)|\[.*?\]", "", raw_title)
+
+        # Clean up multiple spaces left behind and trim edges
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+
+        # Fallback: If the entire title was inside brackets (e.g., "[Untitled]"),
+        # the string would be empty. In that rare case, keep the raw title.
+        if not normalized:
+            normalized = raw_title.strip()
+
+        return normalized
