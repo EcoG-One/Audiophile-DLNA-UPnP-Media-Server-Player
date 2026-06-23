@@ -135,6 +135,22 @@ export default function AlbumPage() {
           >
             {albumData.artist}
           </h2>
+
+          {/* ALWAYS-ON AUDIOPHILE BADGE FOR THE ACTIVE EDITION */}
+          {activeEdition?.quality_text && (
+            <div className="mb-8 flex items-center">
+              <span className={`inline-flex items-center px-3 py-1.5 rounded-full text-xs font-bold uppercase tracking-wider border shadow-sm ${
+                activeEdition.quality_rank >= 30 ? 'bg-amber-500/10 text-amber-400 border-amber-500/30' : 
+                activeEdition.quality_rank >= 20 ? 'bg-blue-500/10 text-blue-400 border-blue-500/30' : 
+                'bg-gray-800 text-gray-400 border-gray-700'
+              }`}>
+                {activeEdition.quality_rank >= 30 && <span className="mr-1.5 text-sm">★</span>}
+                {activeEdition.quality_text} 
+                <span className="text-gray-500 mx-2">|</span> 
+                {activeEdition.codec} {activeEdition.bit_depth ? `• ${activeEdition.bit_depth}-bit` : ''} {activeEdition.sample_rate ? `• ${activeEdition.sample_rate / 1000}kHz` : ''}
+              </span>
+            </div>
+          )}
           
           {/* 1. EDITIONS SELECTOR */}
           {albumData.editions.length > 1 && (
