@@ -40,12 +40,19 @@ export default function App() {
 
         <div className="flex-1 px-4 space-y-2 mt-4">
           <NavLink 
-            to="/library"
-            // Use a unique key based on location to force a full remount/refresh when clicking "My Library"
-            key={location.pathname === '/library' ? Date.now() : 'lib'}
-            className={`w-full flex items-center gap-4 px-4 py-3 rounded-lg transition-colors ${isLibraryActive ? 'bg-gray-800 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-800/50'}`}
+            to="/library?tab=albums" 
+            className={({ isActive, search }) => `flex items-center space-x-3 p-3 rounded-lg font-medium transition-colors ${isActive && search === '?tab=albums' ? 'bg-blue-600/20 text-blue-500' : 'text-gray-400 hover:bg-gray-800 hover:text-white'}`}
           >
-            <span className="font-medium">My Library</span>
+            <span className="text-xl">💿</span>
+            <span>Albums</span>
+          </NavLink>
+
+          <NavLink 
+            to="/library?tab=artists" 
+            className={({ isActive, search }) => `flex items-center space-x-3 p-3 rounded-lg font-medium transition-colors ${isActive && search === '?tab=artists' ? 'bg-blue-600/20 text-blue-500' : 'text-gray-400 hover:bg-gray-800 hover:text-white'}`}
+          >
+            <span className="text-xl">🎤</span>
+            <span>Artists</span>
           </NavLink>
           
           <NavLink 
@@ -63,7 +70,7 @@ export default function App() {
           <div className="w-full max-w-2xl"><SearchBar /></div>
         </header>
 
-        <div ref={scrollRef} className="flex-1 overflow-y-auto custom-scrollbar">
+        <div id="main-scroll-container" ref={scrollRef} className="flex-1 overflow-y-auto custom-scrollbar">
           <div className="pb-32">
             <Routes>
               <Route path="/" element={<Navigate to="/library" replace />} />

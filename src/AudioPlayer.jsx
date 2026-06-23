@@ -75,7 +75,16 @@ export default function AudioPlayer() {
                 <div className="text-sm font-bold text-gray-100 truncate group-hover:text-blue-400 transition-colors">
                   {currentTrack.title}
                 </div>
-                <div className="text-xs text-gray-400 truncate">
+                <div 
+                  className="text-xs text-gray-400 truncate hover:text-blue-400 hover:underline cursor-pointer inline-block"
+                  title="View Artist"
+                  onClick={(e) => {
+                    e.stopPropagation(); // Prevents the parent Album routing from firing
+                    if (currentTrack?.artist) {
+                      navigate(`/artist/${encodeURIComponent(currentTrack.artist)}`);
+                    }
+                  }}
+                >
                   {currentTrack.artist}
                 </div>
               </div>

@@ -123,7 +123,13 @@ export default function AlbumPage() {
               spanClassName="text-2xl md:text-4xl text-gray-400/80 font-bold ml-3" 
             />
           </h1>
-          <h2 className="text-2xl text-gray-400 mb-6">{albumData.artist}</h2>
+          <h2 
+            className="text-2xl text-gray-400 mb-6 hover:text-blue-400 hover:underline cursor-pointer w-max transition-colors"
+            title={`View all albums by ${albumData.artist}`}
+            onClick={() => navigate(`/artist/${encodeURIComponent(albumData.artist)}`)}
+          >
+            {albumData.artist}
+          </h2>
           
           {/* 1. EDITIONS SELECTOR */}
           {albumData.editions.length > 1 && (
@@ -206,7 +212,18 @@ export default function AlbumPage() {
                   </td>
                   
                   <td className={`px-6 py-4 font-medium ${isCurrentlyPlaying ? 'text-blue-400' : 'text-gray-100'}`}>{track.title}</td>
-                  <td className="px-6 py-4 text-sm text-gray-400">{track.artist}</td>
+                  <td className="px-6 py-4 text-sm text-gray-400">
+                    <span 
+                      className="hover:text-blue-400 hover:underline cursor-pointer transition-colors"
+                      title={`View ${track.artist}`}
+                      onClick={(e) => {
+                        e.stopPropagation(); // Prevents the parent row from playing the track!
+                        navigate(`/artist/${encodeURIComponent(track.artist)}`);
+                      }}
+                    >
+                      {track.artist}
+                    </span>
+                  </td>
                   <td className="px-6 py-4 text-right font-mono text-sm text-gray-500">{formatTime(track.duration)}</td>
                 </tr>
               );
