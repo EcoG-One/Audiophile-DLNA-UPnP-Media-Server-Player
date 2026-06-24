@@ -304,7 +304,69 @@ class MediaLibrary:
                     self._index_file(file_path)
         self.conn.commit()
         self._fetch_missing_artist_art()
+        self.heal_missing_album_art()
         logger.info(f"{'\033[93m'}Scan complete.{'\033[0m'}")
+
+    def heal_missing_album_art(self):
+        """
+        Background task: Finds albums missing cover art, fetches high-res images,
+        embeds them into the physical files, and updates the UI cache.
+        """
+        import logging
+        from album_art import ArtworkHealer
+        from pathlib import Path
+        import hashlib
+
+        logger = logging.getLogger("MediaLibrary")
+        cursor = self.conn.cursor()
+
+        # Find all releases (editions) that have NO artwork
+        cursor.execute('''
+            SELECT r.id, r.mbid, rg.mbid, r.title, a.name 
+            FROM releases r
+            JOIN release_groups rg ON r.release_group_id = rg.id
+            JOIN artists a ON rg.artist_id = a.id
+            WHERE r.art_hash IS NULL
+        ''')
+        missing_releases = cursor.fetchall()
+
+        if not missing_releases:
+            return
+
+        logger.info(f"🩺 Healing Engine: Found {len(missing_releases)} albums missing artwork.")
+
+        for rel_id, rel_mbid, rg_mbid, album_title, artist_name in missing_releases:
+            logger.info(f"Fetching art for: {artist_name} - {album_title}")
+
+            # 1. Fetch the image data
+            image_data = ArtworkHealer.fetch_cover_art(rg_mbid, rel_mbid, artist_name, album_title)
+
+            if image_data:
+                # 2. Hash and cache for the Web UI
+                art_hash = hashlib.md5(image_data).hexdigest()
+                art_path = self.art_cache_dir / art_hash
+
+                if not art_path.exists():
+                    with open(art_path, "wb") as f:
+                        f.write(image_data)
+
+                # 3. Find all tracks belonging to this edition
+                cursor.execute("SELECT path FROM tracks WHERE release_id=?", (rel_id,))
+                tracks = cursor.fetchall()
+
+                success_count = 0
+                for (track_path,) in tracks:
+                    # 4. Embed into the physical audio file!
+                    if ArtworkHealer.embed_artwork(Path(track_path), image_data):
+                        success_count += 1
+
+                # 5. Update the database so the UI displays the new art instantly
+                if success_count > 0:
+                    cursor.execute("UPDATE releases SET art_hash=? WHERE id=?", (art_hash, rel_id))
+                    self.conn.commit()
+                    logger.info(f"✅ Successfully embedded art into {success_count} files for '{album_title}'.")
+            else:
+                logger.warning(f"❌ Could not find artwork for '{album_title}'. Will retry next scan.")
 
     def _index_file(self, file_path):
         import hashlib
