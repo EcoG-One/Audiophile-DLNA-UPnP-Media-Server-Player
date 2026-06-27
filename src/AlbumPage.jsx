@@ -160,9 +160,9 @@ export default function AlbumPage() {
                 {albumData.editions.map((edition, idx) => (
                   <button
                     key={edition.release_id || idx}
-                    onClick={() => handleEditionChange(idx)}  
+                    onClick={() => handleEditionChange(idx)}
                     className={`w-full text-left px-4 py-3 rounded-lg flex items-center justify-between transition-all ${
-                      selectedEditionIndex === idx            
+                      selectedEditionIndex === idx
                         ? 'bg-blue-600/20 border-l-4 border-blue-500 text-white'
                         : 'hover:bg-gray-800 text-gray-400 border-l-4 border-transparent'
                     }`}
@@ -173,6 +173,16 @@ export default function AlbumPage() {
                           ? <FormattedTitle title={edition.edition_title} spanClassName="text-[0.85em] opacity-75 ml-1" /> 
                           : `Edition ${idx + 1}`}
                       </span>
+
+                      {/* THE NEW FOLDER INDICATOR */}
+                      {edition.folder_path && (
+                        <div 
+                          className="text-[0.65em] text-gray-500 font-mono mt-1 mb-1 truncate max-w-md" 
+                          title={edition.folder_path}
+                        >
+                          📁 {edition.folder_path.split(/[\\/]/).pop()}
+                        </div>
+                      )}
                       
                       {/* The Audiophile Badge */}
                       {edition.quality_text && (
@@ -180,9 +190,7 @@ export default function AlbumPage() {
                           edition.quality_rank >= 30 ? 'text-amber-400' : 
                           edition.quality_rank >= 20 ? 'text-blue-400' : 'text-gray-500'
                         }`}>
-                          {/* Render a tiny star for Hi-Res */}
                           {edition.quality_rank >= 30 && <span>★</span>}
-                          
                           {edition.quality_text} 
                           <span className="text-gray-600 mx-1">|</span> 
                           {edition.codec} {edition.bit_depth ? `• ${edition.bit_depth}-bit` : ''} {edition.sample_rate ? `• ${edition.sample_rate / 1000}kHz` : ''}

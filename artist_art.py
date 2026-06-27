@@ -161,7 +161,10 @@ def get_artist_assets(name: str):
         try:
             artist_id = get_musicbrainz_id(name)
             fanart_url = f"https://webservice.fanart.tv/v3.2/music/{artist_id}"
-            fanart_resp = requests.get(fanart_url, params={"api_key": FANART_API_KEY})
+            fanart_headers = {"api-key": FANART_API_KEY}
+            if FANART_CLIENT_API_KEY:
+                fanart_headers["client-key"] = FANART_CLIENT_API_KEY
+            fanart_resp = requests.get(fanart_url, headers=fanart_headers, timeout=10)
 
             if fanart_resp.status_code == 200:
                 api_data = fanart_resp.json()

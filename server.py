@@ -141,7 +141,7 @@ class MediaLibrary:
                 track_number INTEGER,
                 disc_number INTEGER,
                 duration REAL,
-                path TEXT UNIQUE NOT NULL,
+                path TEXT NOT NULL,
                 mime_type TEXT,
                 size INTEGER,
                 FOREIGN KEY(release_id) REFERENCES releases(id),
@@ -156,6 +156,9 @@ class MediaLibrary:
             cursor.execute("ALTER TABLE releases ADD COLUMN codec TEXT")
             cursor.execute("ALTER TABLE releases ADD COLUMN sample_rate INTEGER")
             cursor.execute("ALTER TABLE releases ADD COLUMN bit_depth INTEGER")
+            cursor.execute("ALTER TABLE tracks ADD COLUMN start_time REAL")
+            cursor.execute("ALTER TABLE tracks ADD COLUMN end_time REAL")
+            cursor.execute("ALTER TABLE tracks ADD COLUMN cue_path TEXT")
         except sqlite3.OperationalError:
             pass # Columns already exist
 
@@ -279,15 +282,19 @@ class MediaLibrary:
             print("✨ Database purge complete. Orphaned metadata removed.")
 
     def scan_directories(self, directories):
+        from pathlib import Path
+        import logging
+
+        logger = logging.getLogger("MediaLibrary")
+
         logger.info(f"{'\033[93m'}Starting media scan...{'\033[0m'}")
         self._purge_missing_files()
-        cursor = self.conn.cursor()
+
         supported_exts = {
             ".flac",
             ".wav",
             ".mp3",
             ".dsf",
-            ".dff",
             ".m4a",
             ".mp4",
             ".ogg",
@@ -295,17 +302,134 @@ class MediaLibrary:
             ".aif",
             ".alac",
             ".wma",
+            ".ape",
+            ".wv",
         }
+        cue_target_files = set()
 
+        # PHASE 1: CUE SHEET INJECTION
+        for directory in directories:
+            path = Path(directory)
+            for file_path in path.rglob("*.cue"):
+                # Run the custom CUE indexer
+                target_audio_file = self._index_cue_file(file_path)
+                if target_audio_file:
+                    # Blacklist the large target file from being scanned normally!
+                    cue_target_files.add(str(target_audio_file.resolve()))
+
+        # PHASE 2: STANDARD FILE SCAN
         for directory in directories:
             path = Path(directory)
             for file_path in path.rglob("*"):
                 if file_path.is_file() and file_path.suffix.lower() in supported_exts:
-                    self._index_file(file_path)
+                    # Skip the file if it was already sliced up by a CUE sheet
+                    if str(file_path.resolve()) not in cue_target_files:
+                        self._index_file(file_path)
+
         self.conn.commit()
         self._fetch_missing_artist_art()
         self.heal_missing_album_art()
         logger.info(f"{'\033[93m'}Scan complete.{'\033[0m'}")
+
+    def _index_cue_file(self, cue_path):
+        import hashlib
+        import traceback
+        from mutagen import File
+        from cue_parser import CueParser
+        from audio_quality import AudioAnalyzer
+        from normalization import ArtistNormalizer, AlbumNormalizer
+
+        try:
+            # 1. Parse CUE Data
+            cue_data = CueParser.parse(cue_path)
+            if not cue_data or not cue_data.get("file") or not cue_data.get("tracks"):
+                return None
+
+            # 2. Resolve Target Audio File
+            target_path = cue_path.parent / cue_data['file']
+            if not target_path.exists():
+                if not cue_data['file'].lower().endswith(('.flac', '.ape', '.mp3', '.m4a', '.mp4', '.wv', '.alac')):
+                    # Attempt to find a matching audio file with the same base name
+                    base_name = cue_data['file'].rsplit('.', 1)[0]
+                    for ext in ['.flac', '.ape', '.mp3', '.m4a', '.mp4', '.wv', '.alac']:
+                        potential_file = cue_path.parent / f"{base_name}{ext}"
+                        if potential_file.exists():
+                            target_path = potential_file
+                            break
+            if not target_path.exists():
+                print(f"⚠️ [CUE] Target audio file missing: {target_path}")
+                return None
+
+            # 3. Analyze Audio (We do this ONCE for the whole massive file)
+            audio = File(target_path, easy=True)
+            if audio is None:
+                return None
+
+            metrics = AudioAnalyzer.analyze(target_path, audio)
+            total_duration = getattr(audio.info, "length", 0)
+
+            # 4. Global Metadata Normalization
+            album_name_raw = cue_data['title']
+            album_name_normalized = AlbumNormalizer.normalize(album_name_raw)
+            album_artist_display, album_artist_norm = ArtistNormalizer.normalize(cue_data['artist'])
+
+            cursor = self.conn.cursor()
+
+            def get_or_create_artist(norm_key, display_name):
+                cursor.execute("SELECT id FROM artists WHERE normalized_key=?", (norm_key,))
+                row = cursor.fetchone()
+                if row: return row[0]
+                new_id = hashlib.md5(norm_key.encode()).hexdigest()
+                cursor.execute("INSERT INTO artists (id, normalized_key, name) VALUES (?, ?, ?)", (new_id, norm_key, display_name))
+                return new_id
+
+            album_artist_id = get_or_create_artist(album_artist_norm, album_artist_display)
+
+            # 5. Strict Deterministic Hashing
+            rg_id = hashlib.md5(f"{album_artist_id}_{album_name_normalized.lower()}".encode()).hexdigest()
+            base_folder_path = str(cue_path.parent)
+            release_id = hashlib.md5(f"{rg_id}_{base_folder_path}_{metrics['quality_rank']}_CUE".encode()).hexdigest()
+
+            # Upsert Master and Release Group
+            cursor.execute(
+                "INSERT OR IGNORE INTO release_groups (id, artist_id, title) VALUES (?, ?, ?)",
+                (rg_id, album_artist_id, album_name_normalized)
+            )
+
+            art_hash = self._extract_and_cache_art(target_path)
+
+            cursor.execute('''
+                INSERT OR IGNORE INTO releases 
+                (id, release_group_id, title, folder_path, art_hash, quality_text, quality_rank, codec, sample_rate, bit_depth)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (release_id, rg_id, album_name_raw, base_folder_path, art_hash, metrics["quality_text"], metrics["quality_rank"], metrics["codec"], metrics["sample_rate"], metrics["bit_depth"]))
+
+            # 6. Inject Virtual Tracks!
+            tracks = cue_data['tracks']
+            for i, track in enumerate(tracks):
+                track_display, track_norm = ArtistNormalizer.normalize(track['artist'])
+                track_artist_id = get_or_create_artist(track_norm, track_display)
+
+                # Calculate End Time: The start time of the NEXT track, or the total file length if it's the last track.
+                start_time = track['start_time']
+                end_time = tracks[i+1]['start_time'] if i + 1 < len(tracks) else total_duration
+                duration = end_time - start_time
+
+                track_id = hashlib.md5(f"{release_id}_cue_{track['track_number']}_{start_time}".encode()).hexdigest()
+
+                cursor.execute('''
+                    INSERT OR REPLACE INTO tracks 
+                    (id, release_id, artist_id, title, track_number, duration, path, mime_type, size, start_time, end_time, cue_path)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (track_id, release_id, track_artist_id, track['title'], track['track_number'], duration, 
+                      str(target_path), f"audio/{target_path.suffix.lower().strip('.')}", target_path.stat().st_size, start_time, end_time, str(cue_path)))
+
+            return target_path
+
+        except Exception as e:
+            print(f"❌ Failed to parse CUE {cue_path}: {e}")
+            traceback.print_exc()
+            return None
 
     def heal_missing_album_art(self):
         """
@@ -451,14 +575,27 @@ class MediaLibrary:
                 album_norm, album_display, mb_album_artist_id
             )
 
-            # MASTER ALBUM HASH: Force identical titles to merge regardless of MusicBrainz tags
+            # MASTER ALBUM HASH
             rg_id = hashlib.md5(
                 f"{album_artist_id}_{album_name_normalized.lower()}".encode()
             ).hexdigest()
 
-            # SPECIFIC EDITION HASH: Force folder paths to be the ultimate glue
-            folder_path = str(file_path.parent)
-            sig = f"{rg_id}_{folder_path}_{metrics['quality_rank']}"
+            # --- MULTI-DISC FOLDER COLLAPSING ---
+            parent_dir = file_path.parent
+            dir_name = parent_dir.name
+
+            # Detect folders like "CD1", "CD 1", "Disc 2", "Disk 01", "Part 1"
+            is_disc_folder = re.match(r"(?i)^(cd|disc|disk|part)[\s\-_]*\d+$", dir_name)
+
+            if is_disc_folder:
+                # Step UP one directory to use the main album folder as the Edition identity
+                base_folder_path = str(parent_dir.parent)
+            else:
+                # Use the current folder
+                base_folder_path = str(parent_dir)
+
+            # SPECIFIC EDITION HASH: Use the collapsed base folder path!
+            sig = f"{rg_id}_{base_folder_path}_{metrics['quality_rank']}"
             release_id = hashlib.md5(sig.encode()).hexdigest()
 
             # Clean edition title for UI display
@@ -1019,20 +1156,27 @@ class UPnPServer:
         codec = "unknown"
         lower_path = original_path.lower()
         if lower_path.endswith(".m4a") or lower_path.endswith(".mp4"):
-            # We assume ALAC for m4a containers to trigger the transcoder check
             codec = "alac"
         elif lower_path.endswith(".flac"):
             codec = "flac"
+        elif lower_path.endswith(".ape"):
+            codec = "ape"
+        elif lower_path.endswith(".wv"):
+            codec = "wv"
 
         # 3. Transcoding & Delivery Logic
         try:
             user_agent = request.headers.get("User-Agent", "")
-
-            # If you placed your BrowserCapabilities class in capabilities.py, import it:
             from capabilities import BrowserCapabilities
 
-            if BrowserCapabilities.needs_alac_transcoding(user_agent, codec):
-                # We assume you attached transcoder to self. If it's a global, just use `transcoder`
+            # Always transcode APE and WV. For ALAC, defer to the browser capabilities.
+            needs_transcode = False
+            if codec in ["ape", "wv"]:
+                needs_transcode = True
+            elif BrowserCapabilities.needs_alac_transcoding(user_agent, codec):
+                needs_transcode = True
+
+            if needs_transcode:
                 serve_path = await self.transcoder.get_transcoded_file(
                     original_path, media_id
                 )
@@ -1404,11 +1548,11 @@ class UPnPServer:
 
             album_title, artist_name = master_row
 
-            # 2. Fetch Editions (Releases) with Audio Metrics
+            # 2. Fetch Editions (Releases) with Audio Metrics AND Folder Path
             cursor.execute(
                 """
                 SELECT id, title, year, label, catalog_num, art_hash, 
-                       quality_text, quality_rank, codec, sample_rate, bit_depth
+                       quality_text, quality_rank, codec, sample_rate, bit_depth, folder_path
                 FROM releases 
                 WHERE release_group_id=? 
                 ORDER BY quality_rank DESC, year ASC
@@ -1423,7 +1567,7 @@ class UPnPServer:
                 # 3. Fetch Tracks for this specific Edition
                 cursor.execute(
                     """
-                    SELECT t.id, t.title, t.track_number, t.disc_number, t.duration, t.path, t.mime_type, t.size, a.name
+                    SELECT t.id, t.title, t.track_number, t.disc_number, t.duration, t.path, t.mime_type, t.size, a.name, t.start_time, t.end_time
                     FROM tracks t
                     JOIN artists a ON t.artist_id = a.id
                     WHERE t.release_id=? 
@@ -1445,6 +1589,9 @@ class UPnPServer:
                             "mime_type": t_row[6],
                             "size": t_row[7],
                             "artist": t_row[8],
+                            # Slice Data for CUE Support
+                            "start_time": t_row[9],
+                            "end_time": t_row[10],
                         }
                     )
 
@@ -1461,6 +1608,7 @@ class UPnPServer:
                         "codec": r_row[8],
                         "sample_rate": r_row[9],
                         "bit_depth": r_row[10],
+                        "folder_path": r_row[11],
                         "tracks": tracks,
                     }
                 )
@@ -1600,6 +1748,22 @@ class UPnPServer:
 # ==========================================
 async def main():
     logging.basicConfig(level=logging.INFO)
+
+    loop = asyncio.get_running_loop()
+
+    # --- THE WINDOWS 10054 SILENCER ---
+    def silence_winerror(loop, context):
+        exc = context.get("exception")
+        # If it's the exact Windows socket disconnect error, ignore it completely
+        if (
+            isinstance(exc, ConnectionResetError)
+            and getattr(exc, "winerror", None) == 10054
+        ):
+            return
+        # Otherwise, process exceptions normally
+        loop.default_exception_handler(context)
+
+    loop.set_exception_handler(silence_winerror)
 
     # 1. Load the persistent configuration
     config_file = os.path.expanduser(

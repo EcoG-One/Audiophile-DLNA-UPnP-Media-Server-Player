@@ -39,13 +39,20 @@ export default function AudioPlayer() {
 
   if (!currentTrack) return null; // Hide if nothing is playing
 
+  // const currentTrack = usePlayerStore(state => state.currentTrack);
+  let trackUrl = `/media/${currentTrack.id}`;
+  if (currentTrack.start_time !== undefined && currentTrack.end_time !== undefined) {
+    trackUrl += `#t=${currentTrack.start_time},${currentTrack.end_time}`;
+  }
+
   return (
     <div className="fixed bottom-0 w-full h-24 bg-gray-900 border-t border-gray-800 text-white flex items-center px-6">
       
       {/* Hidden Native Audio Element */}
       <audio 
         ref={audioRef} 
-        src={`/media/${currentTrack.id}`} 
+        src={trackUrl} 
+        autoPlay
         onEnded={nextTrack}
         onTimeUpdate={(e) => setTrackProgress(e.target.currentTime, e.target.duration)}
         onLoadedMetadata={(e) => setTrackProgress(0, e.target.duration)}
