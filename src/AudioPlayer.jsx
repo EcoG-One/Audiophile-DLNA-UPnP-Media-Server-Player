@@ -45,6 +45,24 @@ export default function AudioPlayer() {
     trackUrl += `#t=${currentTrack.start_time},${currentTrack.end_time}`;
   }
 
+  const handleTimeUpdate = (e) => {
+    const audio = e.target;
+    
+    setTrackProgress(e.target.currentTime, e.target.duration);
+    // --- CUE SHEET VIRTUAL TRACK LOGIC ---
+    if (currentTrack?.end_time) {
+      // We check if we are within 0.2 seconds of the end to account for 
+      // floating-point inaccuracies in how browsers report currentTime.
+      if (audio.currentTime >= currentTrack.end_time - 0.2) {
+        // We reached the end of the slice! 
+        audio.pause(); 
+        
+        // Manually trigger your store to move to the next track
+        nextTrack(); 
+      }
+    }
+  };
+
   return (
     <div className="fixed bottom-0 w-full h-24 bg-gray-900 border-t border-gray-800 text-white flex items-center px-6">
       
@@ -52,10 +70,10 @@ export default function AudioPlayer() {
       <audio 
         ref={audioRef} 
         src={trackUrl} 
-        autoPlay
-        onEnded={nextTrack}
-        onTimeUpdate={(e) => setTrackProgress(e.target.currentTime, e.target.duration)}
+        autoPlay       
+        onTimeUpdate={handleTimeUpdate}
         onLoadedMetadata={(e) => setTrackProgress(0, e.target.duration)}
+        onEnded={nextTrack}
       />
 
       {/* Track Info */}
