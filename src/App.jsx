@@ -6,6 +6,7 @@ import AlbumPage from './AlbumPage';
 import ArtistPage from './ArtistPage';
 import AudioPlayer from './AudioPlayer';
 import Settings from './Settings';
+import Playlists from './Playlists';
 
 // A simple 404 component
 function NotFound() {
@@ -54,6 +55,14 @@ export default function App() {
             <span className="text-xl">🎤</span>
             <span>Artists</span>
           </NavLink>
+
+          <NavLink 
+            to="/playlists" 
+            className={({ isActive, search }) => `flex items-center space-x-3 p-3 rounded-lg font-medium transition-colors ${isActive && search === '?tab=playlists' ? 'bg-blue-600/20 text-blue-500' : 'text-gray-400 hover:bg-gray-800 hover:text-white'}`}
+          >
+            <span className="text-xl">📻</span>
+            <span>Playlists</span>
+          </NavLink>
           
           <NavLink 
             to="/settings"
@@ -78,6 +87,7 @@ export default function App() {
               <Route path="/settings" element={<Settings />} />
               <Route path="/album/:albumId" element={<AlbumPage />} />
               <Route path="/artist/:artistName" element={<ArtistPage />} />
+              <Route path="/playlists" element={<Playlists />} />
               <Route path="*" element={<NotFound />} />
             </Routes>
           </div>

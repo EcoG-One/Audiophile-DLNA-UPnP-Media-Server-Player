@@ -10,7 +10,10 @@ export default function AudioPlayer() {
     isPlaying, 
     volume, 
     togglePlay, 
-    nextTrack, 
+    playNextTrack, 
+    playPreviousTrack,
+    queue,
+    queueIndex, 
     currentTime, 
     duration, 
     setTrackProgress, 
@@ -58,7 +61,7 @@ export default function AudioPlayer() {
         audio.pause(); 
         
         // Manually trigger your store to move to the next track
-        nextTrack(); 
+        playNextTrack(); 
       }
     }
   };
@@ -70,10 +73,10 @@ export default function AudioPlayer() {
       <audio 
         ref={audioRef} 
         src={trackUrl} 
-        autoPlay       
+        autoPlay={isPlaying}       
         onTimeUpdate={handleTimeUpdate}
         onLoadedMetadata={(e) => setTrackProgress(0, e.target.duration)}
-        onEnded={nextTrack}
+        onEnded={playNextTrack}
       />
 
       {/* Track Info */}
@@ -122,11 +125,29 @@ export default function AudioPlayer() {
       {/* Controls */}
       <div className="flex flex-col items-center justify-center w-1/3">
         <div className="flex space-x-6">
-          <button className="hover:text-blue-400 text-gray-300">⏮</button>
+          {/* PREVIOUS BUTTON */}
+          <button 
+            onClick={playPreviousTrack}
+            disabled={queue.length === 0 || queueIndex === 0}
+            className="text-gray-400 hover:text-white disabled:opacity-30 transition-colors"
+          >
+            <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" />
+            </svg>
+          </button>
           <button onClick={togglePlay} className="text-3xl hover:text-blue-400">
             {isPlaying ? '⏸' : '▶️'}
           </button>
-          <button onClick={nextTrack} className="hover:text-blue-400 text-gray-300">⏭</button>
+          {/* NEXT BUTTON */}
+          <button 
+            onClick={playNextTrack}
+            disabled={queue.length === 0 || queueIndex === queue.length - 1}
+            className="text-gray-400 hover:text-white disabled:opacity-30 transition-colors"
+          >
+            <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" />
+            </svg>
+          </button>
         </div>
         
         {/* Progress bar */}

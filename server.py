@@ -149,6 +149,28 @@ class MediaLibrary:
             )
         """)
 
+        # 5. Playlists (The container)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS playlists (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                file_path TEXT UNIQUE,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        # 6. Playlist Tracks (The ordered contents)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS playlist_tracks (
+                playlist_id TEXT,
+                track_id TEXT,
+                position INTEGER,
+                FOREIGN KEY(playlist_id) REFERENCES playlists(id) ON DELETE CASCADE,
+                FOREIGN KEY(track_id) REFERENCES tracks(id) ON DELETE CASCADE,
+                PRIMARY KEY (playlist_id, track_id, position)
+            )
+        """)
+
         # Safely inject the new Audiophile metrics into the releases table
         try:
             cursor.execute("ALTER TABLE releases ADD COLUMN quality_text TEXT")
@@ -304,6 +326,8 @@ class MediaLibrary:
             ".wma",
             ".ape",
             ".wv",
+            ".m3u",
+            ".m3u8"
         }
         cue_target_files = set()
 
@@ -326,10 +350,66 @@ class MediaLibrary:
                     if str(file_path.resolve()) not in cue_target_files:
                         self._index_file(file_path)
 
+        # PHASE 3: PLAYLIST SYNC
+        for directory in directories:
+            path = Path(directory)
+            for file_path in path.rglob("*"):
+                if file_path.is_file() and file_path.suffix.lower() in {
+                    ".m3u",
+                    ".m3u8",
+                }:
+                    self._index_m3u(file_path)
+
         self.conn.commit()
         self._fetch_missing_artist_art()
         self.heal_missing_album_art()
         logger.info(f"{'\033[93m'}Scan complete.{'\033[0m'}")
+
+    def _index_m3u(self, file_path):
+        import hashlib
+        from playlist_manager import PlaylistManager
+
+        cursor = self.conn.cursor()
+
+        playlist_name = file_path.stem
+        # Generate a deterministic ID based on the file location
+        playlist_id = hashlib.md5(f"playlist_{file_path}".encode()).hexdigest()
+
+        # 1. Upsert the Playlist Container
+        cursor.execute(
+            """
+            INSERT OR IGNORE INTO playlists (id, name, file_path) 
+            VALUES (?, ?, ?)
+        """,
+            (playlist_id, playlist_name, str(file_path)),
+        )
+
+        # 2. Extract paths from the physical file
+        physical_paths = PlaylistManager.parse_m3u(file_path)
+
+        # 3. Wipe and rebuild the relational links (ensures DB exactly matches the file)
+        cursor.execute(
+            "DELETE FROM playlist_tracks WHERE playlist_id=?", (playlist_id,)
+        )
+
+        position = 1
+        for track_path in physical_paths:
+            # We must find the internal database ID for this physical path
+            # (Note: For CUE sheets, this grabs the first virtual track slice pointing to the FLAC)
+            cursor.execute("SELECT id FROM tracks WHERE path=? LIMIT 1", (track_path,))
+            row = cursor.fetchone()
+
+            if row:
+                track_id = row[0]
+                cursor.execute(
+                    """
+                    INSERT INTO playlist_tracks (playlist_id, track_id, position)
+                    VALUES (?, ?, ?)
+                """,
+                    (playlist_id, track_id, position),
+                )
+                position += 1
+
 
     def _index_cue_file(self, cue_path):
         import hashlib
@@ -893,6 +973,15 @@ class UPnPServer:
         self.app.router.add_get('/api/albums/{album_id}', self.api_get_album)
         self.app.router.add_get("/api/artists/{artist_name}", self.api_get_artist)
         self.app.router.add_static("/artist-art", str(MUSIC_LIBRARY_BASE))
+        # Playlist API Routes
+        self.app.router.add_get("/api/playlists", self.api_get_playlists)
+        self.app.router.add_post("/api/playlists", self.api_create_playlist)
+        self.app.router.add_get(
+            "/api/playlists/{playlist_id}", self.api_get_playlist_tracks
+        )
+        self.app.router.add_post(
+            "/api/playlists/{playlist_id}/tracks", self.api_add_to_playlist
+        )
 
     async def handle_description(self, request):
         # UPnP Device Architecture XML
@@ -1741,6 +1830,155 @@ class UPnPServer:
             traceback.print_exc()
             print(f"----------------------------------------\n")
             return web.json_response({"error": str(e)}, status=500)
+
+    async def api_get_playlists(self, request):
+        cursor = self.library.conn.cursor()
+        cursor.execute("SELECT id, name, file_path FROM playlists ORDER BY name")
+        playlists = [
+            {"id": r[0], "name": r[1], "file_path": r[2]} for r in cursor.fetchall()
+        ]
+        return web.json_response(playlists)
+
+    async def api_create_playlist(self, request):
+        import uuid
+        from pathlib import Path
+
+        data = await request.json()
+        name = data.get("name", "New Playlist")
+
+        # Determine where to save new playlists (Uses the first configured media directory)
+        base_dir = self.config.get("MEDIA_DIRS", ["."])[0]
+        playlist_dir = Path(base_dir) / "Playlists"
+        playlist_dir.mkdir(exist_ok=True)
+
+        file_path = playlist_dir / f"{name}.m3u"
+        playlist_id = str(uuid.uuid4())
+
+        cursor = self.library.conn.cursor()
+        cursor.execute(
+            "INSERT INTO playlists (id, name, file_path) VALUES (?, ?, ?)",
+            (playlist_id, name, str(file_path)),
+        )
+        self.library.conn.commit()
+
+        # Write an empty M3U file to disk immediately
+        from playlist_manager import PlaylistManager
+
+        PlaylistManager.write_m3u(file_path, name, [])
+
+        return web.json_response({"success": True, "id": playlist_id, "name": name})
+    
+    async def api_get_playlist_tracks(self, request):
+        import traceback
+        import urllib.parse
+        
+        try:
+            playlist_id = urllib.parse.unquote(request.match_info.get("playlist_id", ""))
+            cursor = self.library.conn.cursor()
+            
+            # 1. Get Playlist Metadata
+            cursor.execute("SELECT name, file_path FROM playlists WHERE id=?", (playlist_id,))
+            row = cursor.fetchone()
+            
+            if not row:
+                return web.json_response({"error": "Playlist not found"}, status=404)
+                
+            playlist_name, file_path = row
+            
+            # 2. Get Ordered Tracks with full UI Metadata
+            # We join across 5 tables to ensure the React UI gets the album art and artist names!
+            cursor.execute('''
+                SELECT t.id, t.title, t.duration, t.path, t.mime_type, a.name, r.art_hash, rg.title
+                FROM playlist_tracks pt
+                JOIN tracks t ON pt.track_id = t.id
+                JOIN artists a ON t.artist_id = a.id
+                LEFT JOIN releases r ON t.release_id = r.id
+                LEFT JOIN release_groups rg ON r.release_group_id = rg.id
+                WHERE pt.playlist_id=?
+                ORDER BY pt.position
+            ''', (playlist_id,))
+            
+            tracks = []
+            for t_row in cursor.fetchall():
+                tracks.append({
+                    "id": t_row[0],
+                    "title": t_row[1],
+                    "duration": t_row[2],
+                    "path": t_row[3],
+                    "mime_type": t_row[4],
+                    "artist": t_row[5],
+                    "art_hash": t_row[6],
+                    "album": t_row[7]
+                })
+                
+            return web.json_response({
+                "id": playlist_id,
+                "name": playlist_name,
+                "file_path": file_path,
+                "tracks": tracks
+            })
+            
+        except Exception as e:
+            print(f"\n--- CRITICAL ERROR IN api_get_playlist_tracks ---")
+            traceback.print_exc()
+            return web.json_response({"error": str(e)}, status=500)
+        
+
+    async def api_add_to_playlist(self, request):
+        playlist_id = request.match_info["playlist_id"]
+        data = await request.json()
+        track_id = data.get("track_id")
+
+        cursor = self.library.conn.cursor()
+
+        # 1. Get the target playlist file path
+        cursor.execute(
+            "SELECT file_path, name FROM playlists WHERE id=?", (playlist_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return web.json_response({"error": "Playlist not found"}, status=404)
+        file_path, playlist_name = row
+
+        # 2. Get the next position index
+        cursor.execute(
+            "SELECT COALESCE(MAX(position), 0) + 1 FROM playlist_tracks WHERE playlist_id=?",
+            (playlist_id,),
+        )
+        next_pos = cursor.fetchone()[0]
+
+        # 3. Insert into the database
+        cursor.execute(
+            "INSERT INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)",
+            (playlist_id, track_id, next_pos),
+        )
+        self.library.conn.commit()
+
+        # 4. Fetch the full, updated tracklist to write to disk
+        cursor.execute(
+            """
+            SELECT t.path, t.duration, t.title, a.name 
+            FROM playlist_tracks pt
+            JOIN tracks t ON pt.track_id = t.id
+            JOIN artists a ON t.artist_id = a.id
+            WHERE pt.playlist_id=?
+            ORDER BY pt.position
+        """,
+            (playlist_id,),
+        )
+
+        tracks_data = []
+        for r in cursor.fetchall():
+            tracks_data.append(
+                {"path": r[0], "duration": r[1], "title": r[2], "artist": r[3]}
+            )
+
+        # 5. Overwrite the physical M3U file to sync the changes!
+        from playlist_manager import PlaylistManager
+
+        PlaylistManager.write_m3u(file_path, playlist_name, tracks_data)
+
+        return web.json_response({"success": True})
 
 
 # ==========================================

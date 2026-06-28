@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { usePlayerStore } from './store';
 import FormattedTitle from './FormattedTitle';
+import AddToPlaylistModal from './AddToPlaylistModal';
 
 export default function AlbumPage() {
   const { albumId } = useParams();
@@ -13,6 +14,7 @@ export default function AlbumPage() {
   // State for selectors
   const [selectedEditionIndex, setSelectedEditionIndex] = useState(0);
   const [selectedDisc, setSelectedDisc] = useState(1);
+  const [activePlaylistTrackId, setActivePlaylistTrackId] = useState(null);
 
   // Connect to global audio player
   const { playTrack, setPlaylist, currentTrack, isPlaying } = usePlayerStore();
@@ -272,13 +274,34 @@ export default function AlbumPage() {
                       {track.artist}
                     </span>
                   </td>
-                  <td className="px-6 py-4 text-right font-mono text-sm text-gray-500">{formatTime(track.duration)}</td>
+                  <td className="px-6 py-4 text-right font-mono text-sm text-gray-500">{formatTime(track.duration)}
+                    {/* THE SUBTLE PLUS BUTTON */}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation(); // Stops the track from playing when you click the button!
+                        setActivePlaylistTrackId(track.id);
+                      }}
+                      className="text-gray-600 hover:text-blue-400 hover:scale-110 transition-all opacity-0 group-hover:opacity-100 p-1"
+                      title="Add to Playlist"
+                    >
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4" />
+                      </svg>
+                    </button>
+                  </td>
                 </tr>
               );
             })}
           </tbody>
         </table>
       </div>
+      {/* Mount the modal if a track is selected */}
+      {activePlaylistTrackId && (
+        <AddToPlaylistModal 
+          trackId={activePlaylistTrackId} 
+          onClose={() => setActivePlaylistTrackId(null)} 
+        />
+      )}
     </div>
   );
 }

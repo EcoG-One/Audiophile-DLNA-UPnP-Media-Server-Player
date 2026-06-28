@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-export const usePlayerStore = create((set) => ({
+export const usePlayerStore = create((set, get) => ({
   currentTrack: null,
   playlist: [],
   isPlaying: false,
@@ -9,22 +9,57 @@ export const usePlayerStore = create((set) => ({
   currentTime: 0,
   duration: 0,
   
+  // Queue System
+  queue: [],
+  queueIndex: -1,
+
+  // Play a single track (bypassing the queue)
   playTrack: (track) => set({ currentTrack: track, isPlaying: true }),
-  setPlaylist: (tracks) => set({ playlist: tracks }),
-  togglePlay: () => set((state) => ({ isPlaying: !state.isPlaying })),
+
+  // Load an entire playlist into the queue
+  setPlaylist: (tracks, startIndex = 0) => set({
+    queue: tracks,
+    queueIndex: startIndex,
+    currentTrack: tracks[startIndex],
+    isPlaying: true
+  }),
   setVolume: (level) => set({ volume: level }),
   
-  // New actions to update progress
+  // actions to update progress
   setTrackProgress: (currentTime, duration) => set({ currentTime, duration }),
   seekTo: (time) => set({ currentTime: time }),
 
-  nextTrack: () => set((state) => {
-    const currentIndex = state.playlist.findIndex(t => t.id === state.currentTrack?.id);
-    if (currentIndex >= 0 && currentIndex < state.playlist.length - 1) {
-        return { currentTrack: state.playlist[currentIndex + 1], isPlaying: true };
+  // Skip Forward
+  playNextTrack: () => {
+    const { queue, queueIndex } = get();
+    // Check if we have a queue and aren't at the end
+    if (queue.length > 0 && queueIndex < queue.length - 1) {
+      const nextIndex = queueIndex + 1;
+      set({
+        queueIndex: nextIndex,
+        currentTrack: queue[nextIndex],
+        isPlaying: true
+      });
+    } else {
+      // Playlist finished
+      set({ isPlaying: false });
     }
-    return state;
-  })
+  },
+
+  // Skip Backward
+  playPreviousTrack: () => {
+    const { queue, queueIndex } = get();
+    if (queue.length > 0 && queueIndex > 0) {
+      const prevIndex = queueIndex - 1;
+      set({
+        queueIndex: prevIndex,
+        currentTrack: queue[prevIndex],
+        isPlaying: true
+      });
+    }
+  },
+
+  togglePlay: () => set((state) => ({ isPlaying: !state.isPlaying })),
 }));
 
 export const useLibraryStore = create((set, get) => ({
