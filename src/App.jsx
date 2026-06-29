@@ -8,6 +8,9 @@ import AudioPlayer from './AudioPlayer';
 import Settings from './Settings';
 import Playlists from './Playlists';
 import QueueFlyout from './QueueFlyout';
+import BottomNav from './BottomNav';
+import Artists from './Artists';
+import Search from './Search';
 
 // A simple 404 component
 function NotFound() {
@@ -34,7 +37,8 @@ export default function App() {
   return (
     <div className="flex h-screen w-full bg-gray-950 text-gray-100 overflow-hidden font-sans">
       
-      {/* DESKTOP SIDEBAR */}
+      {/* DESKTOP SIDEBAR (Hidden on mobile via 'hidden md:flex') */}
+      <aside className="hidden md:flex w-64 flex-col bg-gray-900 border-r border-gray-800 z-10">
       <nav className="hidden md:flex flex-col w-64 bg-gray-900 border-r border-gray-800 shrink-0 z-20">
         <div className="p-6">
           <h1 className="text-xl font-bold tracking-wider text-blue-500">EcoGenious</h1>
@@ -73,15 +77,21 @@ export default function App() {
           </NavLink>
         </div>
       </nav>
+      </aside>
 
       {/* MAIN CONTENT */}
-      <main className="flex-1 flex flex-col min-w-0 relative h-full">
+      <main className="flex-1 overflow-y-auto relative bg-gradient-to-b from-gray-900 to-black">
+        {/* Critical: Padding bottom ensures the last items in lists 
+          aren't hidden behind the Audio Player and Bottom Nav.
+          Mobile needs ~32 padding (BottomNav + MiniPlayer). 
+          Desktop needs ~24 (Just AudioPlayer).
+        */}
         <header className="shrink-0 h-20 bg-gray-950/80 backdrop-blur-md sticky top-0 z-10 flex items-center px-6 border-b border-gray-800/50">
           <div className="w-full max-w-2xl"><SearchBar /></div>
         </header>
 
         <div id="main-scroll-container" ref={scrollRef} className="flex-1 overflow-y-auto custom-scrollbar">
-          <div className="pb-32">
+          <div className="pb-32 md:pb-24 min-h-full">
             <Routes>
               <Route path="/" element={<Navigate to="/library" replace />} />
               <Route path="/library" element={<DiscoveryView />} />
@@ -89,6 +99,8 @@ export default function App() {
               <Route path="/album/:albumId" element={<AlbumPage />} />
               <Route path="/artist/:artistName" element={<ArtistPage />} />
               <Route path="/playlists" element={<Playlists />} />
+              <Route path="/artists" element={<Artists />} />
+              <Route path="/search" element={<Search />} />
               <Route path="*" element={<NotFound />} />
             </Routes>
           </div>
@@ -101,8 +113,9 @@ export default function App() {
       </nav>
 
       <div className="fixed bottom-0 left-0 w-full z-30">
-        <QueueFlyout /> 
-        <AudioPlayer />
+        <BottomNav />
+      <AudioPlayer />
+      <QueueFlyout />
       </div>
     </div>
   );

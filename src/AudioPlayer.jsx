@@ -1,10 +1,12 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { usePlayerStore } from './store';
 import { useNavigate } from 'react-router-dom';
 
 export default function AudioPlayer() {
   const navigate = useNavigate();
+  const [isExpanded, setIsExpanded] = useState(false);
   const audioRef = useRef(null);
+  
   const { 
     currentTrack, 
     isPlaying, 
@@ -14,7 +16,6 @@ export default function AudioPlayer() {
     playNextTrack, 
     playPreviousTrack,
     queue,
-    queueIndex, 
     currentTime, 
     duration, 
     setTrackProgress, 
@@ -22,28 +23,39 @@ export default function AudioPlayer() {
     toggleQueueFlyout
   } = usePlayerStore();
 
-  const handleNavigateToAlbum = () => {
-    if (currentTrack?.album_id) {
-      // Navigate seamlessly without interrupting the <audio> element
-      navigate(`/album/${encodeURIComponent(currentTrack.album_id)}`);
+  // Centralized navigation logic to handle both mobile expanding and desktop routing
+  const handleTrackInfoClick = () => {
+    if (!currentTrack) return;
+
+    if (window.innerWidth < 768 && !isExpanded) {
+      setIsExpanded(true);
+    } else if (playbackContext?.type === 'playlist') {
+      navigate('/playlists', { state: { targetPlaylistId: playbackContext.id } });
+      setIsExpanded(false);
     } else {
-      console.warn("No album ID available for this track.");
+      // Safely fall back to album_id (original working behavior) or release_id
+      const targetId = playbackContext?.id || currentTrack.album_id || currentTrack.release_id;
+      if (targetId) {
+        navigate(`/album/${encodeURIComponent(targetId)}`);
+      }
+      setIsExpanded(false);
     }
   };
 
-  const handleContextNavigation = () => {
+  const handleArtistClick = (e) => {
+    e.stopPropagation(); // Prevents the main container click from firing
     if (!currentTrack) return;
-
-    if (playbackContext?.type === 'playlist') {
-      // Pass state via the router to tell the Playlists page what to open
-      navigate('/playlists', { state: { targetPlaylistId: playbackContext.id } });
-    } 
-    else if (playbackContext?.type === 'album' || currentTrack.release_id) {
-      // Fallback to album view (using context or extracting from the track)
-      const targetId = playbackContext?.id || currentTrack.release_id;
-      navigate(`/album/${targetId}`);
+    
+    if (window.innerWidth < 768 && !isExpanded) {
+      setIsExpanded(true); // Still expand the player on mobile if minimized
+    } else if (currentTrack.artist_id) {
+      navigate(`/artist/${encodeURIComponent(currentTrack.artist_id)}`);
+      setIsExpanded(false);
+    } else if (currentTrack.artist) {
+      // Fallback if your backend only passed the string name
+      navigate(`/artist/${encodeURIComponent(currentTrack.artist)}`);
+      setIsExpanded(false);
     }
-    // Future expansion: else if (playbackContext?.type === 'search') ...
   };
 
   useEffect(() => {
@@ -57,9 +69,8 @@ export default function AudioPlayer() {
     }
   }, [isPlaying, currentTrack, volume]);
 
-  if (!currentTrack) return null; // Hide if nothing is playing
+  if (!currentTrack) return null;
 
-  // const currentTrack = usePlayerStore(state => state.currentTrack);
   let trackUrl = `/media/${currentTrack.id}`;
   if (currentTrack.start_time !== undefined && currentTrack.end_time !== undefined) {
     trackUrl += `#t=${currentTrack.start_time},${currentTrack.end_time}`;
@@ -67,127 +78,139 @@ export default function AudioPlayer() {
 
   const handleTimeUpdate = (e) => {
     const audio = e.target;
-    
     setTrackProgress(e.target.currentTime, e.target.duration);
-    // --- CUE SHEET VIRTUAL TRACK LOGIC ---
+    
     if (currentTrack?.end_time) {
-      // We check if we are within 0.2 seconds of the end to account for 
-      // floating-point inaccuracies in how browsers report currentTime.
       if (audio.currentTime >= currentTrack.end_time - 0.2) {
-        // We reached the end of the slice! 
         audio.pause(); 
-        
-        // Manually trigger your store to move to the next track
         playNextTrack(); 
       }
     }
   };
 
   return (
-    <div className="fixed bottom-0 w-full h-24 bg-gray-900 border-t border-gray-800 text-white flex items-center px-6">
-      
-      {/* Hidden Native Audio Element */}
-      <audio 
-        ref={audioRef} 
-        src={trackUrl} 
-        autoPlay={isPlaying}       
-        onTimeUpdate={handleTimeUpdate}
-        onLoadedMetadata={(e) => setTrackProgress(0, e.target.duration)}
-        onEnded={playNextTrack}
-      />
-
-      {/* Track Info */}
+    <>
       <div 
-          onClick={handleContextNavigation}
-          className="flex items-center gap-4 w-1/3 cursor-pointer group hover:bg-gray-800/50 p-2 rounded-lg transition-colors"
+        className={`fixed z-50 transition-all duration-300 ease-in-out bg-gray-900 border-gray-800 backdrop-blur-xl
+          ${isExpanded 
+            ? 'inset-0 flex flex-col p-6' 
+            : 'bottom-16 md:bottom-0 w-full h-16 md:h-24 border-t flex items-center px-4 md:px-6' 
+          }
+        `}
+      >
+        {isExpanded && (
+          <button 
+            onClick={() => setIsExpanded(false)}
+            className="md:hidden absolute top-6 left-6 text-gray-400 p-2"
+          >
+            ↓
+          </button>
+        )}
+
+        {/* LEFT SECTION: Track Info */}
+        <div 
+          onClick={handleTrackInfoClick}
+          className={`flex items-center cursor-pointer group hover:bg-gray-800/50 rounded-lg transition-colors
+            ${isExpanded 
+              ? 'flex-col flex-1 justify-center mt-12' 
+              : 'w-2/3 md:w-1/3 gap-3 p-1' 
+            }
+          `}
           title="Go to playing source"
         >
-          {currentTrack ? (
-            <>
-              <div className="w-14 h-14 bg-gray-800 rounded-md overflow-hidden shadow-md group-hover:shadow-lg transition-shadow flex-shrink-0">
-                {currentTrack.art ? (
-                  <img src={`/art/${currentTrack.art}`} alt="Cover" className="w-full h-full object-cover" />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center text-xl">🎵</div>
-                )}
-              </div>
-              <div className="flex flex-col overflow-hidden">
-                {/* FormattedTitle can be used here if you imported it previously! */}
-                <div className="text-sm font-bold text-gray-100 truncate group-hover:text-blue-400 transition-colors">
-                  {currentTrack.title}
-                </div>
-                <div 
-                  className="text-xs text-gray-400 truncate hover:text-blue-400 hover:underline cursor-pointer inline-block"
-                  title="View Artist"
-                  onClick={(e) => {
-                    e.stopPropagation(); // Prevents the parent Album routing from firing
-                    if (currentTrack?.artist) {
-                      navigate(`/artist/${encodeURIComponent(currentTrack.artist)}`);
-                    }
-                  }}
-                >
-                  {currentTrack.artist}
-                </div>
-              </div>
-            </>
+          {currentTrack.art_hash || currentTrack.art ? (
+            <img 
+              src={`/art/${currentTrack.art_hash || currentTrack.art}`} 
+              alt="Album Art" 
+              className={`shadow-lg object-cover flex-shrink-0 ${
+                isExpanded ? 'w-64 h-64 mb-8 rounded-xl shadow-2xl' : 'w-10 h-10 md:w-14 md:h-14 rounded-md'
+              }`} 
+            />
           ) : (
-            <div className="text-sm text-gray-500 font-medium">Not Playing</div>
+            <div className={`flex items-center justify-center bg-gray-800 text-gray-500 flex-shrink-0 shadow-lg ${
+                isExpanded ? 'w-64 h-64 mb-8 rounded-xl shadow-2xl text-6xl' : 'w-10 h-10 md:w-14 md:h-14 rounded-md text-xl'
+              }`}>
+              🎵
+            </div>
           )}
-        </div>
-
-      {/* Controls */}
-      <div className="flex flex-col items-center justify-center w-1/3">
-        <div className="flex space-x-6">
-          {/* PREVIOUS BUTTON */}
-          <button 
-            onClick={playPreviousTrack}
-            disabled={queue.length === 0 || queueIndex === 0}
-            className="text-gray-400 hover:text-white disabled:opacity-30 transition-colors"
-          >
-            <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" />
-            </svg>
-          </button>
-          <button onClick={togglePlay} className="text-3xl hover:text-blue-400">
-            {isPlaying ? '⏸' : '▶️'}
-          </button>
-          {/* NEXT BUTTON */}
-          <button 
-            onClick={playNextTrack}
-            disabled={queue.length === 0 || queueIndex === queue.length - 1}
-            className="text-gray-400 hover:text-white disabled:opacity-30 transition-colors"
-          >
-            <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" />
-            </svg>
-          </button>
-        </div>
-        
-        {/* Progress bar */}
-        <div className="w-full mt-2">
-          <input 
-            type="range" 
-            min="0" 
-            max={duration || 0} 
-            step="0.1" 
-            value={currentTime}
-            onChange={(e) => {
-              const time = parseFloat(e.target.value);
-              seekTo(time);
-              if (audioRef.current) audioRef.current.currentTime = time;
-            }}
-            className="w-full h-1 bg-gray-700 accent-blue-500 cursor-pointer"
-          />
-          <div className="flex justify-between text-[10px] text-gray-400 mt-1">
-            <span>{Math.floor(currentTime / 60)}:{(currentTime % 60).toFixed(0).padStart(2, '0')}</span>
-            <span>{duration ? Math.floor(duration / 60) + ":" + (duration % 60).toFixed(0).padStart(2, '0') : "0:00"}</span>
+          <div className={`flex flex-col overflow-hidden ${isExpanded ? 'items-center text-center' : ''}`}>
+            {/* TRACK TITLE (Routes to Album/Playlist) */}
+            <span 
+              className={`font-bold text-white truncate hover:underline ${isExpanded ? 'text-2xl mb-2' : 'text-sm md:text-base'}`}
+            >
+              {currentTrack.title}
+            </span>
+            
+            {/* ARTIST NAME (Routes to Artist) */}
+            <span 
+              onClick={handleArtistClick}
+              className={`text-gray-400 truncate hover:text-white hover:underline cursor-pointer transition-colors ${isExpanded ? 'text-lg' : 'text-xs md:text-sm'}`}
+            >
+              {currentTrack.artist}
+            </span>
           </div>
         </div>
-      </div>
 
-      {/* Volume */}
-      <div className="w-1/3 flex justify-end">
-        {/* QUEUE BUTTON */}
+        {/* MIDDLE SECTION: Transport Controls (Fixed Layout) */}
+        <div className={`flex flex-col items-center justify-center
+          ${isExpanded 
+            ? 'w-full mb-12 gap-8' 
+            : 'hidden md:flex w-1/3' 
+          }
+        `}>
+          {/* Buttons on top */}
+          <div className={`flex items-center ${isExpanded ? 'gap-8' : 'gap-6 mb-2'}`}>
+            <button onClick={playPreviousTrack} className="text-gray-400 hover:text-white transition-colors">
+              <svg className={isExpanded ? 'w-10 h-10' : 'w-5 h-5'} fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" /></svg>
+            </button>
+            <button onClick={togglePlay} className="text-white bg-blue-600 hover:bg-blue-500 rounded-full p-2.5 transition-transform hover:scale-105 shadow-lg shadow-blue-500/30">
+              {isPlaying ? (
+                <svg className={isExpanded ? 'w-10 h-10' : 'w-6 h-6'} fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" /></svg>
+              ) : (
+                <svg className={isExpanded ? 'w-10 h-10' : 'w-6 h-6'} fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
+              )}
+            </button>
+            <button onClick={playNextTrack} className="text-gray-400 hover:text-white transition-colors">
+              <svg className={isExpanded ? 'w-10 h-10' : 'w-5 h-5'} fill="currentColor" viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" /></svg>
+            </button>
+          </div>
+
+          {/* Progress bar and timestamps perfectly inline below buttons */}
+          <div className="w-full max-w-md flex items-center gap-3 px-2">
+            <span className="text-[10px] text-gray-400 font-mono w-8 text-right">
+              {Math.floor(currentTime / 60)}:{(currentTime % 60).toFixed(0).padStart(2, '0')}
+            </span>
+            <input 
+              type="range" 
+              min="0" 
+              max={duration || 0} 
+              step="0.1" 
+              value={currentTime}
+              onChange={(e) => {
+                const time = parseFloat(e.target.value);
+                seekTo(time);
+                if (audioRef.current) audioRef.current.currentTime = time;
+              }}
+              className="flex-1 h-1 bg-gray-700 accent-blue-500 cursor-pointer"
+            />
+            <span className="text-[10px] text-gray-400 font-mono w-8">
+              {duration ? Math.floor(duration / 60) + ":" + (duration % 60).toFixed(0).padStart(2, '0') : "0:00"}
+            </span>
+          </div>
+        </div>
+
+        {/* MOBILE MINI TRANSPORT */}
+        <div className={`md:hidden flex items-center justify-end w-1/3 gap-3 ${isExpanded ? 'hidden' : ''}`}>
+          <button onClick={togglePlay} className="text-white p-2">
+            {isPlaying 
+              ? <svg className="w-8 h-8" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" /></svg>
+              : <svg className="w-8 h-8" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
+            }
+          </button>
+        </div>
+
+        {/* RIGHT SECTION: Extras (Volume, Queue) */}
+        <div className={`hidden md:flex items-center justify-end w-1/3 pr-4 gap-4 ${isExpanded ? 'hidden' : ''}`}>
           <button 
             onClick={toggleQueueFlyout}
             className={`p-2 rounded-lg transition-colors relative ${
@@ -198,18 +221,31 @@ export default function AudioPlayer() {
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 12h16M4 18h7" />
             </svg>
-            {/* Tiny indicator dot if there are tracks in the queue */}
             {queue.length > 0 && (
               <span className="absolute top-1 right-1 w-2 h-2 bg-blue-500 rounded-full border-2 border-gray-900"></span>
             )}
           </button>
-        <input 
-          type="range" min="0" max="1" step="0.01" 
-          defaultValue={volume}
-          onChange={(e) => usePlayerStore.getState().setVolume(e.target.value)}
-          className="w-32 accent-blue-500"
-        />
+          
+          <div className="flex items-center gap-2">
+            <svg className="w-4 h-4 text-gray-400" fill="currentColor" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+            <input 
+              type="range" min="0" max="1" step="0.01" 
+              defaultValue={volume}
+              onChange={(e) => usePlayerStore.getState().setVolume(e.target.value)}
+              className="w-24 accent-blue-500"
+            />
+          </div>
+        </div>
       </div>
-    </div>
+
+      <audio 
+        ref={audioRef} 
+        src={trackUrl} 
+        autoPlay={isPlaying}       
+        onTimeUpdate={handleTimeUpdate}
+        onLoadedMetadata={(e) => setTrackProgress(0, e.target.duration)}
+        onEnded={playNextTrack}
+      />
+    </>
   );
 }
