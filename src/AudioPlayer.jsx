@@ -91,12 +91,10 @@ export default function AudioPlayer() {
   return (
     <>
       <div 
-        className={`fixed z-50 transition-all duration-300 ease-in-out bg-gray-900 border-gray-800 backdrop-blur-xl
-          ${isExpanded 
-            ? 'inset-0 flex flex-col p-6' 
-            : 'bottom-16 md:bottom-0 w-full h-16 md:h-24 border-t flex items-center px-4 md:px-6' 
-          }
-        `}
+        className={isExpanded 
+            ? "fixed inset-0 z-[100] flex flex-col p-6 bg-gray-900 transition-all duration-300" // Expanded (Full Screen Overlay)
+            : "w-full h-[65px] md:h-24 border-t border-gray-800 bg-gray-900 flex items-center px-4 md:px-6 shrink-0 transition-all duration-300" // Minimized (Inline Block)
+        }
       >
         {isExpanded && (
           <button 

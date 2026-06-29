@@ -81,7 +81,7 @@ export default function Playlists() {
   };
 
   return (
-    <div className="w-full max-w-screen-xl mx-auto px-6 py-8 pb-32 animate-fade-in text-white h-[calc(100vh-80px)] flex gap-6">
+    <div className="w-full max-w-screen-xl mx-auto px-6 py-8 animate-fade-in text-white flex gap-6">
       
       {/* Sidebar: Playlist List */}
       <div className="w-1/3 max-w-sm bg-gray-900/50 border border-gray-800 rounded-xl flex flex-col overflow-hidden">

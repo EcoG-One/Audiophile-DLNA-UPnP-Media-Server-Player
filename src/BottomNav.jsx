@@ -3,18 +3,22 @@ import { Link, useLocation } from 'react-router-dom';
 export default function BottomNav() {
   const location = useLocation();
   
+  // Removed Search, updated Artists path
   const navItems = [
     { path: '/', icon: '💿', label: 'Albums' },
     { path: '/library?tab=artists', icon: '🎤', label: 'Artists' },
     { path: '/playlists', icon: '📻', label: 'Playlists' },
-    { path: '/search', icon: '🔍', label: 'Search' },
   ];
 
   return (
-    <nav className="md:hidden fixed bottom-0 w-full bg-gray-900/95 border-t border-gray-800 backdrop-blur-lg z-40 pb-safe">
-      <div className="flex justify-around items-center h-16">
+    <nav className="md:hidden w-full h-[65px] bg-gray-900 border-t border-gray-800 shrink-0">
+      <div className="flex justify-around items-center h-full px-2">
         {navItems.map((item) => {
-          const isActive = location.pathname === item.path;
+          // Smart active state: checks both the pathname AND the query string
+          const isActive = 
+            location.pathname === item.path || 
+            (location.pathname + location.search) === item.path;
+
           return (
             <Link 
               key={item.path} 
