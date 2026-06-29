@@ -8,6 +8,7 @@ export default function AudioPlayer() {
   const { 
     currentTrack, 
     isPlaying, 
+    playbackContext,
     volume, 
     togglePlay, 
     playNextTrack, 
@@ -17,7 +18,8 @@ export default function AudioPlayer() {
     currentTime, 
     duration, 
     setTrackProgress, 
-    seekTo 
+    seekTo,
+    toggleQueueFlyout
   } = usePlayerStore();
 
   const handleNavigateToAlbum = () => {
@@ -27,6 +29,21 @@ export default function AudioPlayer() {
     } else {
       console.warn("No album ID available for this track.");
     }
+  };
+
+  const handleContextNavigation = () => {
+    if (!currentTrack) return;
+
+    if (playbackContext?.type === 'playlist') {
+      // Pass state via the router to tell the Playlists page what to open
+      navigate('/playlists', { state: { targetPlaylistId: playbackContext.id } });
+    } 
+    else if (playbackContext?.type === 'album' || currentTrack.release_id) {
+      // Fallback to album view (using context or extracting from the track)
+      const targetId = playbackContext?.id || currentTrack.release_id;
+      navigate(`/album/${targetId}`);
+    }
+    // Future expansion: else if (playbackContext?.type === 'search') ...
   };
 
   useEffect(() => {
@@ -81,13 +98,9 @@ export default function AudioPlayer() {
 
       {/* Track Info */}
       <div 
-          onClick={handleNavigateToAlbum}
-          className={`flex items-center w-1/3 gap-4 p-2 -ml-2 rounded-xl transition-all ${
-            currentTrack?.album_id 
-              ? 'cursor-pointer group hover:bg-gray-800/60' 
-              : ''
-          }`}
-          title={currentTrack?.album_id ? "View Album" : ""}
+          onClick={handleContextNavigation}
+          className="flex items-center gap-4 w-1/3 cursor-pointer group hover:bg-gray-800/50 p-2 rounded-lg transition-colors"
+          title="Go to playing source"
         >
           {currentTrack ? (
             <>
@@ -174,6 +187,22 @@ export default function AudioPlayer() {
 
       {/* Volume */}
       <div className="w-1/3 flex justify-end">
+        {/* QUEUE BUTTON */}
+          <button 
+            onClick={toggleQueueFlyout}
+            className={`p-2 rounded-lg transition-colors relative ${
+              queue.length > 0 ? 'text-gray-300 hover:text-white hover:bg-gray-800' : 'text-gray-600 cursor-not-allowed'
+            }`}
+            title="Up Next"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 12h16M4 18h7" />
+            </svg>
+            {/* Tiny indicator dot if there are tracks in the queue */}
+            {queue.length > 0 && (
+              <span className="absolute top-1 right-1 w-2 h-2 bg-blue-500 rounded-full border-2 border-gray-900"></span>
+            )}
+          </button>
         <input 
           type="range" min="0" max="1" step="0.01" 
           defaultValue={volume}

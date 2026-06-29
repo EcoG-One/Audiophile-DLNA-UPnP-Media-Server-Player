@@ -1,8 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import { useLocation } from 'react-router-dom';
 import { usePlayerStore } from './store';
 import { useNavigate } from 'react-router-dom';
 
 export default function Playlists() {
+  const location = useLocation();
+  const activeTrackRef = useRef(null);
   const [playlists, setPlaylists] = useState([]);
   const [activePlaylist, setActivePlaylist] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -16,14 +19,33 @@ export default function Playlists() {
       .then(res => res.json())
       .then(data => {
         setPlaylists(data);
-        if (data.length > 0) {
+        
+        // CHECK ROUTER STATE FIRST
+        const targetId = location.state?.targetPlaylistId;
+        
+        if (targetId && data.find(p => p.id === targetId)) {
+          loadPlaylistDetails(targetId);
+        } else if (data.length > 0) {
           loadPlaylistDetails(data[0].id);
         } else {
           setIsLoading(false);
         }
       })
       .catch(err => console.error(err));
-  }, []);
+  }, [location.state]); // Re-run if the user navigates here via the player again
+
+  // Scroll to the active track whenever the playlist changes or the track advances
+  useEffect(() => {
+    if (activeTrackRef.current) {
+      // Small timeout ensures the DOM has fully rendered the table rows
+      setTimeout(() => {
+        activeTrackRef.current.scrollIntoView({ 
+          behavior: 'smooth', 
+          block: 'center' 
+        });
+      }, 100);
+    }
+  }, [activePlaylist, currentTrack]);
 
   const loadPlaylistDetails = (id) => {
     setIsLoading(true);
@@ -38,14 +60,18 @@ export default function Playlists() {
   const handlePlayPlaylist = (startIndex = 0) => {
     if (!activePlaylist || !activePlaylist.tracks) return;
     
-    // Map tracks to include the art_hash from the API join
     const formattedTracks = activePlaylist.tracks.map(t => ({
       ...t,
       art: t.art_hash 
     }));
     
-    setPlaylist(formattedTracks);
-    playTrack(formattedTracks[startIndex]);
+    // Pass the playback context!
+    setPlaylist(formattedTracks, startIndex, {
+      type: 'playlist',
+      id: activePlaylist.id,
+      name: activePlaylist.name
+    });
+    // playTrack(formattedTracks[startIndex]);
   };
 
   const formatTime = (seconds) => {
@@ -131,8 +157,9 @@ export default function Playlists() {
                     return (
                       <tr 
                         key={`${track.id}-${index}`} 
+                        ref={isCurrentlyPlaying ? activeTrackRef : null} // Attach the ref here!
                         onClick={() => handlePlayPlaylist(index)}
-                        className={`group border-b border-gray-800 hover:bg-gray-800/80 transition-colors cursor-pointer ${isCurrentlyPlaying ? 'bg-gray-800 border-l-4 border-l-blue-500' : 'border-l-4 border-l-transparent'}`}
+                        className={`group border-b border-gray-800 ...`}
                       >
                         <td className="px-6 py-3 text-center text-gray-500">
                           {isCurrentlyPlaying && isPlaying ? (

@@ -7,6 +7,7 @@ import ArtistPage from './ArtistPage';
 import AudioPlayer from './AudioPlayer';
 import Settings from './Settings';
 import Playlists from './Playlists';
+import QueueFlyout from './QueueFlyout';
 
 // A simple 404 component
 function NotFound() {
@@ -100,6 +101,7 @@ export default function App() {
       </nav>
 
       <div className="fixed bottom-0 left-0 w-full z-30">
+        <QueueFlyout /> 
         <AudioPlayer />
       </div>
     </div>

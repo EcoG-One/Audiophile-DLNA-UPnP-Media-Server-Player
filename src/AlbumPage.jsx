@@ -17,7 +17,7 @@ export default function AlbumPage() {
   const [activePlaylistTrackId, setActivePlaylistTrackId] = useState(null);
 
   // Connect to global audio player
-  const { playTrack, setPlaylist, currentTrack, isPlaying } = usePlayerStore();
+  const { playTrack, setPlaylist, currentTrack, isPlaying, addToQueue } = usePlayerStore();
 
   useEffect(() => {
     setIsLoading(true);
@@ -274,20 +274,40 @@ export default function AlbumPage() {
                       {track.artist}
                     </span>
                   </td>
-                  <td className="px-6 py-4 text-right font-mono text-sm text-gray-500">{formatTime(track.duration)}
-                    {/* THE SUBTLE PLUS BUTTON */}
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation(); // Stops the track from playing when you click the button!
-                        setActivePlaylistTrackId(track.id);
-                      }}
-                      className="text-gray-600 hover:text-blue-400 hover:scale-110 transition-all opacity-0 group-hover:opacity-100 p-1"
-                      title="Add to Playlist"
-                    >
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4" />
-                      </svg>
-                    </button>
+                  <td className="px-6 py-4 text-right font-mono text-sm text-gray-500 flex justify-end items-center gap-4">
+                    <span>{formatTime(track.duration)}</span>
+                    
+                    <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                      
+                      {/* THE NEW ADD TO QUEUE BUTTON */}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          addToQueue(track);
+                        }}
+                        className="text-gray-600 hover:text-blue-400 hover:scale-110 transition-all p-1"
+                        title="Add to Queue"
+                      >
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
+                      </button>
+
+                      {/* YOUR EXISTING ADD TO PLAYLIST BUTTON */}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActivePlaylistTrackId(track.id);
+                        }}
+                        className="text-gray-600 hover:text-blue-400 hover:scale-110 transition-all p-1"
+                        title="Add to Playlist"
+                      >
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4" />
+                        </svg>
+                      </button>
+
+                    </div>
                   </td>
                 </tr>
               );
