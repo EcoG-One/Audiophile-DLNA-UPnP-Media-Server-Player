@@ -19,6 +19,7 @@ import struct
 import uuid
 import tempfile
 from pathlib import Path
+from collections import defaultdict
 import xml.etree.ElementTree as ET
 from aiohttp import web
 from mutagen import File as MutagenFile
@@ -181,6 +182,9 @@ class MediaLibrary:
             cursor.execute("ALTER TABLE tracks ADD COLUMN start_time REAL")
             cursor.execute("ALTER TABLE tracks ADD COLUMN end_time REAL")
             cursor.execute("ALTER TABLE tracks ADD COLUMN cue_path TEXT")
+            cursor.execute(
+                "ALTER TABLE albums ADD COLUMN media_type TEXT DEFAULT 'Album'"
+            )
         except sqlite3.OperationalError:
             pass # Columns already exist
 
@@ -409,7 +413,6 @@ class MediaLibrary:
                     (playlist_id, track_id, position),
                 )
                 position += 1
-
 
     def _index_cue_file(self, cue_path):
         import hashlib

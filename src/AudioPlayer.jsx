@@ -23,7 +23,6 @@ export default function AudioPlayer() {
     toggleQueueFlyout
   } = usePlayerStore();
 
-  // Centralized navigation logic to handle both mobile expanding and desktop routing
   const handleTrackInfoClick = () => {
     if (!currentTrack) return;
 
@@ -33,7 +32,6 @@ export default function AudioPlayer() {
       navigate('/playlists', { state: { targetPlaylistId: playbackContext.id } });
       setIsExpanded(false);
     } else {
-      // Safely fall back to album_id (original working behavior) or release_id
       const targetId = playbackContext?.id || currentTrack.album_id || currentTrack.release_id;
       if (targetId) {
         navigate(`/album/${encodeURIComponent(targetId)}`);
@@ -43,33 +41,70 @@ export default function AudioPlayer() {
   };
 
   const handleArtistClick = (e) => {
-    e.stopPropagation(); // Prevents the main container click from firing
+    e.stopPropagation(); 
     if (!currentTrack) return;
     
     if (window.innerWidth < 768 && !isExpanded) {
-      setIsExpanded(true); // Still expand the player on mobile if minimized
+      setIsExpanded(true); 
     } else if (currentTrack.artist_id) {
       navigate(`/artist/${encodeURIComponent(currentTrack.artist_id)}`);
       setIsExpanded(false);
     } else if (currentTrack.artist) {
-      // Fallback if your backend only passed the string name
-      navigate(`/artist/${encodeURIComponent(currentTrack.artist)}`);
+      // Intelligently routing to your existing tabbed library!
+      navigate(`/library?tab=artists&q=${encodeURIComponent(currentTrack.artist)}`);
       setIsExpanded(false);
     }
   };
 
+  // 1. THE PLAYBACK ENGINE EFFECT
   useEffect(() => {
     if (audioRef.current) {
       audioRef.current.volume = volume;
+      
       if (isPlaying) {
-        audioRef.current.play().catch(e => console.error("Playback failed:", e));
+        const playPromise = audioRef.current.play();
+        if (playPromise !== undefined) {
+          playPromise.catch(error => {
+            console.warn("Mobile play prevented, attempting reload:", error);
+            audioRef.current.load();
+            audioRef.current.play().catch(e => console.error("Final play failed:", e));
+          });
+        }
       } else {
         audioRef.current.pause();
       }
     }
   }, [isPlaying, currentTrack, volume]);
 
-  if (!currentTrack) return null;
+  // 2. THE NATIVE SMARTPHONE LOCK SCREEN EFFECT
+  useEffect(() => {
+    if ('mediaSession' in navigator && currentTrack) {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: currentTrack.title,
+        artist: currentTrack.artist,
+        album: currentTrack.album || 'audiophile-server',
+        artwork: [
+          { 
+            src: currentTrack.art_hash || currentTrack.art 
+              ? `/art/${currentTrack.art_hash || currentTrack.art}` 
+              : '/default-art.png', 
+            sizes: '512x512', 
+            type: 'image/jpeg' 
+          }
+        ]
+      });
+
+      navigator.mediaSession.setActionHandler('play', togglePlay);
+      navigator.mediaSession.setActionHandler('pause', togglePlay);
+      navigator.mediaSession.setActionHandler('previoustrack', playPreviousTrack);
+      navigator.mediaSession.setActionHandler('nexttrack', playNextTrack);
+    }
+  }, [currentTrack, togglePlay, playPreviousTrack, playNextTrack]);
+
+  // ==============================================================
+  // CRITICAL GUARD CLAUSE: Do not render anything if no track exists
+  // ==============================================================
+  if (!currentTrack || Object.keys(currentTrack).length === 0) return null;
 
   let trackUrl = `/media/${currentTrack.id}`;
   if (currentTrack.start_time !== undefined && currentTrack.end_time !== undefined) {
@@ -92,8 +127,8 @@ export default function AudioPlayer() {
     <>
       <div 
         className={isExpanded 
-            ? "fixed inset-0 z-[100] flex flex-col p-6 bg-gray-900 transition-all duration-300" // Expanded (Full Screen Overlay)
-            : "w-full h-[65px] md:h-24 border-t border-gray-800 bg-gray-900 flex items-center px-4 md:px-6 shrink-0 transition-all duration-300" // Minimized (Inline Block)
+            ? "fixed inset-0 z-[100] flex flex-col p-6 bg-gray-900 transition-all duration-300" 
+            : "w-full h-[65px] md:h-24 border-t border-gray-800 bg-gray-900 flex items-center px-4 md:px-6 shrink-0 transition-all duration-300" 
         }
       >
         {isExpanded && (
@@ -132,14 +167,9 @@ export default function AudioPlayer() {
             </div>
           )}
           <div className={`flex flex-col overflow-hidden ${isExpanded ? 'items-center text-center' : ''}`}>
-            {/* TRACK TITLE (Routes to Album/Playlist) */}
-            <span 
-              className={`font-bold text-white truncate hover:underline ${isExpanded ? 'text-2xl mb-2' : 'text-sm md:text-base'}`}
-            >
+            <span className={`font-bold text-white truncate hover:underline ${isExpanded ? 'text-2xl mb-2' : 'text-sm md:text-base'}`}>
               {currentTrack.title}
             </span>
-            
-            {/* ARTIST NAME (Routes to Artist) */}
             <span 
               onClick={handleArtistClick}
               className={`text-gray-400 truncate hover:text-white hover:underline cursor-pointer transition-colors ${isExpanded ? 'text-lg' : 'text-xs md:text-sm'}`}
@@ -149,14 +179,13 @@ export default function AudioPlayer() {
           </div>
         </div>
 
-        {/* MIDDLE SECTION: Transport Controls (Fixed Layout) */}
+        {/* MIDDLE SECTION: Transport Controls */}
         <div className={`flex flex-col items-center justify-center
           ${isExpanded 
             ? 'w-full mb-12 gap-8' 
             : 'hidden md:flex w-1/3' 
           }
         `}>
-          {/* Buttons on top */}
           <div className={`flex items-center ${isExpanded ? 'gap-8' : 'gap-6 mb-2'}`}>
             <button onClick={playPreviousTrack} className="text-gray-400 hover:text-white transition-colors">
               <svg className={isExpanded ? 'w-10 h-10' : 'w-5 h-5'} fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" /></svg>
@@ -173,7 +202,6 @@ export default function AudioPlayer() {
             </button>
           </div>
 
-          {/* Progress bar and timestamps perfectly inline below buttons */}
           <div className="w-full max-w-md flex items-center gap-3 px-2">
             <span className="text-[10px] text-gray-400 font-mono w-8 text-right">
               {Math.floor(currentTime / 60)}:{(currentTime % 60).toFixed(0).padStart(2, '0')}
@@ -207,7 +235,7 @@ export default function AudioPlayer() {
           </button>
         </div>
 
-        {/* RIGHT SECTION: Extras (Volume, Queue) */}
+        {/* RIGHT SECTION: Extras */}
         <div className={`hidden md:flex items-center justify-end w-1/3 pr-4 gap-4 ${isExpanded ? 'hidden' : ''}`}>
           <button 
             onClick={toggleQueueFlyout}
@@ -237,7 +265,8 @@ export default function AudioPlayer() {
       </div>
 
       <audio 
-        ref={audioRef} 
+        ref={audioRef}
+        className="absolute opacity-0 w-0 h-0 pointer-events-none"
         src={trackUrl} 
         autoPlay={isPlaying}       
         onTimeUpdate={handleTimeUpdate}
